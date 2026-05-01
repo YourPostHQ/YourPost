@@ -29,6 +29,11 @@ pub fn main(init: std.process.Init) !void {
         .hostname = cfg.hostname,
         .data_dir = cfg.data_dir,
         .max_size = cfg.smtp_max_size,
+        .relay_host = cfg.smtp_relay_host,
+        .relay_port = cfg.smtp_relay_port,
+        .relay_user = cfg.smtp_relay_user,
+        .relay_password = cfg.smtp_relay_password,
+        .relay_use_tls = cfg.smtp_relay_use_tls,
     };
     const pop3_deps = pop3.Deps{
         .global_db = &global_db,
@@ -51,10 +56,10 @@ pub fn main(init: std.process.Init) !void {
         .io = init.io,
     };
 
-    (try std.Thread.spawn(.{}, smtp.listen, .{init.io, cfg.smtp_port, smtp_deps})).detach();
-    (try std.Thread.spawn(.{}, pop3.listen, .{init.io, cfg.pop3_port, pop3_deps})).detach();
-    (try std.Thread.spawn(.{}, imap.listen, .{init.io, cfg.imap_port, imap_deps})).detach();
-    (try std.Thread.spawn(.{}, api.listen, .{init.io, api_deps})).detach();
+    (try std.Thread.spawn(.{}, smtp.listen, .{ init.io, cfg.smtp_port, smtp_deps })).detach();
+    (try std.Thread.spawn(.{}, pop3.listen, .{ init.io, cfg.pop3_port, pop3_deps })).detach();
+    (try std.Thread.spawn(.{}, imap.listen, .{ init.io, cfg.imap_port, imap_deps })).detach();
+    (try std.Thread.spawn(.{}, api.listen, .{ init.io, api_deps })).detach();
 
     std.log.info("yourpost started on SMTP :{d}, POP3 :{d}, IMAP :{d}, API :{d}", .{
         cfg.smtp_port,

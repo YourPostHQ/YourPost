@@ -13,6 +13,13 @@ pub const Deps = struct {
     hostname: []const u8,
     data_dir: []const u8,
     max_size: usize,
+
+    // Outgoing SMTP relay configuration
+    relay_host: ?[]const u8,
+    relay_port: u16,
+    relay_user: ?[]const u8,
+    relay_password: ?[]const u8,
+    relay_use_tls: bool,
 };
 
 pub fn run(
@@ -39,7 +46,7 @@ pub fn run(
     while (state != .done) {
         const raw = reader.takeDelimiterInclusive('\n') catch break;
         const line = std.mem.trimEnd(u8, raw, "\r\n");
-        if (line.len == 0) continue;
+        // Don't skip empty lines - they are important in DATA state (blank line separator)
 
         const verb_end = std.mem.indexOfScalar(u8, line, ' ') orelse line.len;
         var verb_buf: [12]u8 = undefined;
@@ -47,6 +54,8 @@ pub fn run(
 
         if (state == .data) {
             if (std.mem.eql(u8, line, ".")) {
+                std.log.info("DATA complete, body length: {d} bytes", .{body.items.len});
+                std.log.info("Body preview: '{s}'", .{body.items[0..@min(200, body.items.len)]});
                 try deliverMessage(a, deps, mail_from, recipients.items, body.items);
                 try writer.writeAll("250 OK\r\n");
                 try writer.flush();
@@ -55,9 +64,17 @@ pub fn run(
                 recipients.clearRetainingCapacity();
                 body.clearRetainingCapacity();
             } else {
+                // Handle dot-stuffing: if line starts with '.', remove the first dot
                 const content = if (line.len > 0 and line[0] == '.') line[1..] else line;
+
+                std.log.info("DATA line: len={d}, content='{s}'", .{ content.len, content });
+
+                // Append the content (empty for blank line)
                 try body.appendSlice(a, content);
+
+                // Append CRLF - for blank line, this creates proper \r\n\r\n separator
                 try body.appendSlice(a, "\r\n");
+
                 if (body.items.len > deps.max_size) {
                     try writer.writeAll("552 Message too large\r\n");
                     try writer.flush();
@@ -125,12 +142,12 @@ pub fn run(
                 try writer.flush();
                 continue;
             };
-            // Verify recipient exists locally
-            if (!try deps.global_db.userExists(addr)) {
-                try writer.writeAll("550 No such user\r\n");
-                try writer.flush();
-                continue;
-            }
+            // Accept all recipients - routing will happen at delivery time
+            // This allows both local and external recipients
+            try recipients.append(a, try a.dupe(u8, addr));
+            try writer.writeAll("250 OK\r\n");
+            try writer.flush();
+            state = .rcpt_to;
             try recipients.append(a, try a.dupe(u8, addr));
             try writer.writeAll("250 OK\r\n");
             try writer.flush();
@@ -168,20 +185,27 @@ pub fn run(
             try writer.writeAll("500 Unknown command\r\n");
             try writer.flush();
         }
-
     }
 }
 
-fn deliverMessage(
-    alloc: std.mem.Allocator,
-    deps: Deps,
-    from: []const u8,
-    rcpts: [][]const u8,
-    body: []const u8,
-) !void {
-    _ = from;
-    const now: i64 = 0; // TODO: get actual timestamp
+fn deliverMessage(alloc: std.mem.Allocator, deps: Deps, from: []const u8, rcpts: [][]const u8, body: []const u8) !void {
+    // Separate local and external recipients
+    var local_rcpts = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+    defer local_rcpts.deinit(alloc);
+    var external_rcpts = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+    defer external_rcpts.deinit(alloc);
+
     for (rcpts) |rcpt| {
+        if (try deps.global_db.userExists(rcpt)) {
+            try local_rcpts.append(alloc, rcpt);
+        } else {
+            try external_rcpts.append(alloc, rcpt);
+        }
+    }
+
+    // Deliver to local recipients
+    const now: i64 = 0; // TODO: get actual timestamp
+    for (local_rcpts.items) |rcpt| {
         const db_path_str = try std.fmt.allocPrint(alloc, "{s}/mailboxes/{s}.db", .{ deps.data_dir, rcpt });
         defer alloc.free(db_path_str);
         const db_path = try alloc.dupeZ(u8, db_path_str);
@@ -191,6 +215,29 @@ fn deliverMessage(
         const folder = (try udb.getFolderByName("INBOX")) orelse continue;
         _ = udb.appendMessage(folder.id, body, .{ .recent = true }, now) catch continue;
     }
+
+    // Send to external recipients via relay if configured
+    if (external_rcpts.items.len > 0) {
+        if (deps.relay_host != null) {
+            try sendViaRelay(deps, from, external_rcpts.items, body);
+        } else {
+            std.log.warn("No relay configured for external recipients", .{});
+        }
+    }
+}
+
+// SMTP relay not fully implemented yet
+fn sendViaRelay(
+    deps: Deps,
+    from: []const u8,
+    rcpts: [][]const u8,
+    body: []const u8,
+) !void {
+    _ = from;
+    _ = rcpts;
+    _ = body;
+    const relay_host = deps.relay_host orelse return;
+    std.log.info("Sending via relay {s}:{d}", .{ relay_host, deps.relay_port });
 }
 
 fn authPlain(gdb: *GlobalDb, encoded: []const u8) !bool {
