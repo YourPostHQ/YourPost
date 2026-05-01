@@ -150,7 +150,7 @@ fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
             // Remove any <email> wrapping
             if (std.mem.indexOf(u8, recipient, "<")) |start| {
                 if (std.mem.indexOf(u8, recipient, ">")) |end| {
-                    recipient = recipient[start + 1..end];
+                    recipient = recipient[start + 1 .. end];
                 }
             }
         }
