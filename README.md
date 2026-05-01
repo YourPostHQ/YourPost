@@ -65,6 +65,36 @@ curl -X POST http://localhost:8080/incoming \
 | `YP_API_PORT` | HTTP API port | 8080 |
 | `YP_HOSTNAME` | Server hostname | localhost |
 | `YP_DATA_DIR` | Data directory | data |
+| `YP_SMTP_RELAY_HOST` | Outgoing SMTP relay host | (disabled) |
+| `YP_SMTP_RELAY_PORT` | Outgoing SMTP relay port | 587 |
+| `YP_SMTP_RELAY_USER` | SMTP relay authentication username | (disabled) |
+| `YP_SMTP_RELAY_PASSWORD` | SMTP relay authentication password/API key | (disabled) |
+| `YP_SMTP_RELAY_USE_TLS` | Use TLS for SMTP relay | true |
+
+### Outgoing SMTP Relay Configuration
+
+To enable outgoing email delivery through an external SMTP server (e.g., SendGrid, AWS SES), configure these variables:
+
+```bash
+# Example: SendGrid configuration
+export YP_SMTP_RELAY_HOST=smtp.sendgrid.net
+export YP_SMTP_RELAY_PORT=587
+export YP_SMTP_RELAY_USER=apikey
+export YP_SMTP_RELAY_PASSWORD=SG.xxxxxxxxxxxxxxxxxxxxx
+export YP_SMTP_RELAY_USE_TLS=true
+
+# Example: Gmail configuration
+export YP_SMTP_RELAY_HOST=smtp.gmail.com
+export YP_SMTP_RELAY_PORT=465
+export YP_SMTP_RELAY_USER=your-email@gmail.com
+export YP_SMTP_RELAY_PASSWORD=your-app-password
+export YP_SMTP_RELAY_USE_TLS=true
+
+# Run the server with relay configuration
+./zig-out/bin/yourpost
+```
+
+**Note:** When a relay host is configured, outgoing emails will be forwarded through the specified SMTP server instead of being sent directly.
 
 ### Cloudflare Email Worker Setup
 
