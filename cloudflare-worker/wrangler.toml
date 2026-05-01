@@ -1,0 +1,33 @@
+name = "yourpost"
+main = "email-worker.js"
+compatibility_date = "2024-01-01"
+
+# Set your yourpost endpoint
+[vars]
+# YOURPOST_URL = "https://yourpost.yourdomain.com:8080"
+
+# Or use secrets (recommended):
+# wrangler secret put YOURPOST_URL
+
+# Email bindings (if using email routing)
+# [email]
+# name = "YOURPOST_EMAIL"
+
+[[routes]]
+type = "email"
+pattern = "*@yourdomain.com"
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+persist = true
+head_sampling_rate = 1
