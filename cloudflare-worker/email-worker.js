@@ -11,7 +11,12 @@
  *    - Or route specific addresses like: marketing@yourdomain.com, notifications@yourdomain.com
  */
 
+// Export fetch handler (required for Workers)
 export default {
+  async fetch(request, env) {
+    return new Response('yourpost email worker is running', { status: 200 });
+  },
+  
   async email(message, env, ctx) {
     // Log incoming email
     console.log(`Received email from: ${message.from}, to: ${message.to}, subject: ${message.headers.get('subject')}`);
@@ -65,11 +70,8 @@ async function reconstructEmail(message) {
   }
   parts.push('');
 
-  // Add body
-  if (message.raw) {
-    const raw = await message.raw();
-    parts.push(new TextDecoder().decode(raw));
-  } else if (message.text) {
+  // Add body - use message.text() for plain text
+  if (message.text) {
     const text = await message.text();
     parts.push(text);
   }
