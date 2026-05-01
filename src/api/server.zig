@@ -104,15 +104,15 @@ fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
 
     // Read body based on Content-Length, or read until connection closes
     const body_size = content_length orelse 64 * 1024; // Default 64KB if no Content-Length
-    
+
     if (body_size > 10 * 1024 * 1024) { // 10MB max
         try writer.print("HTTP/1.1 413 Payload Too Large\r\n\r\n", .{});
         return;
     }
-    
+
     const body = try alloc.alloc(u8, body_size);
     defer alloc.free(body);
-    
+
     var bytes_read: usize = 0;
     while (bytes_read < body_size) {
         const slice: []u8 = body[bytes_read..];
@@ -125,7 +125,7 @@ fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
         bytes_read += n;
         if (content_length == null) break; // If no Content-Length, read one chunk then stop
     }
-    
+
     std.log.info("Read {d} bytes of email body", .{bytes_read});
     if (bytes_read == 0) {
         std.log.err("Empty body", .{});
@@ -138,23 +138,35 @@ fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
     var recipient: []const u8 = &.{};
     var from: []const u8 = &.{};
     {
-        var header_end: usize = 0;
-        while (header_end < email_body.len - 1) {
-            if (email_body[header_end] == '\r' and email_body[header_end + 1] == '\n') {
-                header_end += 2;
-                break;
+        // Search for To: header in entire email body (simple approach)
+        if (std.mem.indexOf(u8, email_body, "To:")) |to_pos| {
+            // Find end of To: line
+            var line_end: usize = to_pos + 3;
+            while (line_end < email_body.len and email_body[line_end] != '\r' and email_body[line_end] != '\n') {
+                line_end += 1;
             }
-            header_end += 1;
-        }
-        const headers = email_body[0..header_end];
-        var lines = std.mem.splitSequence(u8, headers, "\r\n");
-        while (lines.next()) |line| {
-            if (std.mem.startsWith(u8, line, "To:")) {
-                recipient = std.mem.trim(u8, line[3..], " ");
-            } else if (std.mem.startsWith(u8, line, "From:")) {
-                from = std.mem.trim(u8, line[5..], " ");
+            const to_line = email_body[to_pos..line_end];
+            recipient = std.mem.trim(u8, to_line[3..], " \t");
+            // Remove any <email> wrapping
+            if (std.mem.indexOf(u8, recipient, "<")) |start| {
+                if (std.mem.indexOf(u8, recipient, ">")) |end| {
+                    recipient = recipient[start + 1..end];
+                }
             }
         }
+
+        // Also try to find From: header
+        if (std.mem.indexOf(u8, email_body, "From:")) |from_pos| {
+            // Find end of From: line
+            var line_end: usize = from_pos + 5;
+            while (line_end < email_body.len and email_body[line_end] != '\r' and email_body[line_end] != '\n') {
+                line_end += 1;
+            }
+            const from_line = email_body[from_pos..line_end];
+            from = std.mem.trim(u8, from_line[5..], " \t");
+        }
+
+        std.log.info("Parsed recipient: {s}, from: {s}", .{ recipient, from });
     }
 
     if (recipient.len == 0) {
@@ -185,7 +197,7 @@ fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
     defer alloc.free(db_path_str);
     const db_path = try alloc.dupeZ(u8, db_path_str);
     defer alloc.free(db_path);
-    
+
     std.log.info("Opening/creating user db at: {s}", .{db_path_str});
     var udb = UserDb.open(alloc, db_path) catch |err| {
         std.log.err("Failed to open user db: {}", .{err});

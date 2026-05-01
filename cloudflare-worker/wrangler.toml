@@ -1,5 +1,6 @@
 name = "yourpost"
 main = "email-worker.js"
+type = "javascript-email"
 compatibility_date = "2024-01-01"
 
 # Set your yourpost endpoint
@@ -8,14 +9,6 @@ YOURPOST_URL = "https://yourpost.privatedata.center"
 
 # Or use secrets (recommended):
 # wrangler secret put YOURPOST_URL
-
-# Email bindings (if using email routing)
-# [email]
-# name = "YOURPOST_EMAIL"
-
-[[routes]]
-type = "email"
-pattern = "*@privatedata.center"
 
 [observability]
 enabled = false
