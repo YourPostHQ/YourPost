@@ -1,4 +1,4 @@
-# yourpost - Lightweight Mail Server
+# YourPost - Lightweight Mail Server
 
 A lightweight mail server written in Zig, supporting SMTP, POP3, IMAP, and HTTP API with Cloudflare Email Worker integration.
 
