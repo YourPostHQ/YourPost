@@ -29,6 +29,7 @@ pub fn main(init: std.process.Init) !void {
         .hostname = cfg.hostname,
         .data_dir = cfg.data_dir,
         .max_size = cfg.smtp_max_size,
+        .io = init.io,
         .relay_host = cfg.smtp_relay_host,
         .relay_port = cfg.smtp_relay_port,
         .relay_user = cfg.smtp_relay_user,
