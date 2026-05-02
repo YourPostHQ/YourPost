@@ -14,6 +14,7 @@ pub const Deps = struct {
     api_port: u16,
     service_token: ?[]const u8,
     io: std.Io,
+    web_root: ?[]const u8, // Optional web client root directory
 };
 
 const ConnCtx = struct {
@@ -97,51 +98,89 @@ fn handleConn(ctx: *ConnCtx) void {
         }
     }
 
-    // Check API key if configured
-    if (ctx.deps.service_token) |key| {
-        const expected = std.fmt.allocPrint(ctx.deps.alloc, "Bearer {s}", .{key}) catch return;
-        defer ctx.deps.alloc.free(expected);
-        if (auth_header == null or !std.mem.eql(u8, auth_header.?, expected)) {
-            std.log.warn("Unauthorized /incoming request", .{});
-            writer.print("HTTP/1.1 401 Unauthorized\r\n", .{}) catch return;
-            writer.writeAll("Content-Length: 0\r\n\r\n") catch return;
-            return;
-        }
+    // Route handling with new API structure
+    // /health - Public health check (no auth required)
+    if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/health")) {
+        writeJsonResponse(writer, 200, makeHealthBody()) catch return;
+        return;
     }
 
-    if (std.mem.eql(u8, method, "GET")) {
-        if (std.mem.eql(u8, path, "/health")) {
-            writeJsonResponse(writer, 200, makeHealthBody()) catch return;
-            return;
+    // /api/service/* - Service APIs (require service token)
+    if (std.mem.startsWith(u8, path, "/api/service/")) {
+        // Verify service token
+        if (ctx.deps.service_token) |key| {
+            const expected = std.fmt.allocPrint(ctx.deps.alloc, "Bearer {s}", .{key}) catch return;
+            defer ctx.deps.alloc.free(expected);
+            if (auth_header == null or !std.mem.eql(u8, auth_header.?, expected)) {
+                std.log.warn("Unauthorized service API request to {s}", .{path});
+                writer.print("HTTP/1.1 401 Unauthorized\r\n", .{}) catch return;
+                writer.writeAll("Content-Length: 0\r\n\r\n") catch return;
+                return;
+            }
         }
-        if (std.mem.eql(u8, path, "/users")) {
-            handleListUsers(writer, ctx) catch return;
-            return;
-        }
-        if (std.mem.startsWith(u8, path, "/mailboxes/") and endsWith(path, "/folders")) {
-            const user = path[11 .. path.len - 8];
-            writeUserFolders(writer, ctx, user) catch return;
-            return;
-        }
-    }
 
-    if (std.mem.eql(u8, method, "POST")) {
-        if (std.mem.eql(u8, path, "/incoming")) {
+        const service_path = path[13..]; // Remove "/api/service"
+        if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, service_path, "/incoming")) {
             handleIncoming(writer, ctx, reader, content_length) catch return;
             return;
         }
-        if (std.mem.eql(u8, path, "/users")) {
-            handleCreateUser(writer, ctx, reader, content_length) catch return;
-            return;
-        }
+
+        writeNotFound(writer) catch return;
+        return;
     }
 
-    if (std.mem.eql(u8, method, "DELETE")) {
-        if (std.mem.startsWith(u8, path, "/users/")) {
-            const email = path[7..];
-            handleDeactivateUser(writer, ctx, email) catch return;
-            return;
+    // /api/v1/* - Standard User APIs (require user auth)
+    if (std.mem.startsWith(u8, path, "/api/v1/")) {
+        // TODO: Verify user authentication token
+        // For now, allow all requests (implement JWT/session auth later)
+
+        const api_path = path[8..]; // Remove "/api/v1"
+
+        if (std.mem.eql(u8, method, "GET")) {
+            if (std.mem.eql(u8, api_path, "/users")) {
+                handleListUsers(writer, ctx) catch return;
+                return;
+            }
+            if (std.mem.startsWith(u8, api_path, "/mailboxes/") and endsWith(api_path, "/folders")) {
+                const user = api_path[11 .. api_path.len - 8];
+                writeUserFolders(writer, ctx, user) catch return;
+                return;
+            }
         }
+
+        if (std.mem.eql(u8, method, "POST")) {
+            if (std.mem.eql(u8, api_path, "/users")) {
+                handleCreateUser(writer, ctx, reader, content_length) catch return;
+                return;
+            }
+            if (std.mem.eql(u8, api_path, "/auth")) {
+                handleAuth(writer, ctx, reader, content_length) catch return;
+                return;
+            }
+        }
+
+        if (std.mem.eql(u8, method, "DELETE")) {
+            if (std.mem.startsWith(u8, api_path, "/users/")) {
+                const email = api_path[7..];
+                handleDeactivateUser(writer, ctx, email) catch return;
+                return;
+            }
+        }
+
+        writeNotFound(writer) catch return;
+        return;
+    }
+
+    // /web/* - Web Email Client (static files)
+    if (std.mem.startsWith(u8, path, "/web/") or std.mem.eql(u8, path, "/web")) {
+        serveStaticFile(writer, ctx, path) catch return;
+        return;
+    }
+
+    // Root path - redirect to web client or show API info
+    if (std.mem.eql(u8, path, "/")) {
+        writeApiInfo(writer) catch return;
+        return;
     }
 
     writeNotFound(writer) catch return;
@@ -406,4 +445,123 @@ fn writeUserFolders(writer: anytype, ctx: *ConnCtx, user: []const u8) !void {
 
 fn endsWith(value: []const u8, suffix: []const u8) bool {
     return value.len >= suffix.len and std.mem.eql(u8, value[value.len - suffix.len ..], suffix);
+}
+
+// Handle user authentication and return JWT token
+fn handleAuth(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize) !void {
+    const alloc = ctx.deps.alloc;
+    const body_size = content_length orelse 4096;
+    if (body_size > 1024 * 1024) {
+        try writer.print("HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n", .{});
+        return;
+    }
+    const body = try alloc.alloc(u8, body_size);
+    defer alloc.free(body);
+    var bytes_read: usize = 0;
+    while (bytes_read < body_size) {
+        const slice: []u8 = body[bytes_read..];
+        var slices: [1][]u8 = .{slice};
+        const n = reader.readVec(&slices) catch break;
+        if (n == 0) break;
+        bytes_read += n;
+    }
+    const AuthReq = struct { email: []const u8, password: []const u8 };
+    const parsed = std.json.parseFromSlice(AuthReq, alloc, body[0..bytes_read], .{}) catch {
+        try writeJsonResponse(writer, 400, "{\"error\":\"invalid json\"}");
+        return;
+    };
+    defer parsed.deinit();
+    const authenticated = ctx.deps.global_db.authenticate(parsed.value.email, parsed.value.password) catch false;
+    if (!authenticated) {
+        try writeJsonResponse(writer, 401, "{\"error\":\"invalid credentials\"}");
+        return;
+    }
+    // TODO: Generate JWT token
+    const token = try std.fmt.allocPrint(alloc, "{{\"token\":\"user-token-for-{s}\",\"email\":\"{s}\"}}", .{ parsed.value.email, parsed.value.email });
+    defer alloc.free(token);
+    try writeJsonResponse(writer, 200, token);
+}
+
+// Serve static files for web email client
+// Uses runtime file serving (can be enhanced with @embedFile for production)
+fn serveStaticFile(writer: anytype, ctx: *ConnCtx, path: []const u8) !void {
+    const alloc = ctx.deps.alloc;
+
+    // Determine web root from config or default to "web" directory
+    const web_root = ctx.deps.web_root orelse "web";
+
+    // Map URL path to file path
+    var file_path: []const u8 = undefined;
+    if (std.mem.eql(u8, path, "/web") or std.mem.eql(u8, path, "/web/")) {
+        file_path = try std.fmt.allocPrint(alloc, "{s}/index.html", .{web_root});
+    } else {
+        // Remove "/web" prefix and get the file path
+        const relative_path = if (std.mem.startsWith(u8, path, "/web/"))
+            path[5..] // Remove "/web"
+        else
+            path[4..]; // Remove "/web" (no trailing slash)
+        file_path = try std.fmt.allocPrint(alloc, "{s}{s}", .{ web_root, relative_path });
+    }
+    defer alloc.free(file_path);
+
+    // Security: Prevent directory traversal
+    if (std.mem.indexOf(u8, file_path, "..") != null) {
+        try writer.print("HTTP/1.1 403 Forbidden\r\n", .{});
+        try writer.writeAll("Content-Length: 0\r\n\r\n");
+        return;
+    }
+
+    // Try to open and serve the file
+    const file = std.fs.cwd().openFile(file_path, .{}) catch {
+        try writer.print("HTTP/1.1 404 Not Found\r\n", .{});
+        try writer.writeAll("Content-Type: text/html; charset=utf-8\r\n");
+        try writer.writeAll("Content-Length: 0\r\n\r\n");
+        return;
+    };
+    defer file.close();
+
+    // Get file size
+    const stat = try file.stat();
+    const content_type = getContentType(file_path);
+
+    try writer.print("HTTP/1.1 200 OK\r\n", .{});
+    try writer.print("Content-Type: {s}\r\n", .{content_type});
+    try writer.print("Content-Length: {d}\r\n", .{stat.size});
+    try writer.writeAll("Cache-Control: public, max-age=3600\r\n");
+    try writer.writeAll("Connection: close\r\n\r\n");
+
+    // Stream file content
+    var buf: [8192]u8 = undefined;
+    while (true) {
+        const n = file.read(&buf) catch break;
+        if (n == 0) break;
+        try writer.writeAll(buf[0..n]);
+    }
+    try writer.flush();
+}
+
+fn getContentType(path: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, path, ".html")) return "text/html; charset=utf-8";
+    if (std.mem.endsWith(u8, path, ".css")) return "text/css";
+    if (std.mem.endsWith(u8, path, ".js")) return "application/javascript";
+    if (std.mem.endsWith(u8, path, ".json")) return "application/json";
+    if (std.mem.endsWith(u8, path, ".png")) return "image/png";
+    if (std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) return "image/jpeg";
+    if (std.mem.endsWith(u8, path, ".gif")) return "image/gif";
+    if (std.mem.endsWith(u8, path, ".svg")) return "image/svg+xml";
+    if (std.mem.endsWith(u8, path, ".ico")) return "image/x-icon";
+    return "application/octet-stream";
+}
+
+// Write API information at root endpoint
+fn writeApiInfo(writer: anytype) !void {
+    const body =
+        \\{"service":"yourpost","version":"1.0","endpoints":{
+        \\"health":"/health",
+        \\"service_api":"/api/service/*",
+        \\"user_api":"/api/v1/*",
+        \\"web_client":"/web/*"
+        \\}}
+    ;
+    try writeJsonResponse(writer, 200, body);
 }

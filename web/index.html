@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YourPost - Webmail</title>
+    <link rel="stylesheet" href="/web/css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📧</text></svg>">
+</head>
+<body>
+    <!-- Login Screen -->
+    <div id="login-screen" class="screen active">
+        <div class="login-container">
+            <div class="logo">
+                <h1>📧 YourPost</h1>
+                <p class="subtitle">Lightweight Mail Server</p>
+            </div>
+            <form id="login-form" class="login-form">
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" required placeholder="user@example.com">
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" required placeholder="••••••••">
+                </div>
+                <button type="submit" class="btn btn-primary">Sign In</button>
+                <div id="login-error" class="error-message hidden"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="app-screen" class="screen">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2 id="user-email"></h2>
+                <button id="logout-btn" class="btn btn-sm">Logout</button>
+            </div>
+            <nav class="folder-nav">
+                <a href="#" class="folder-item active" data-folder="INBOX">
+                    <span class="folder-icon">📥</span>
+                    <span class="folder-name">Inbox</span>
+                    <span id="inbox-count" class="badge">0</span>
+                </a>
+                <a href="#" class="folder-item" data-folder="Sent">
+                    <span class="folder-icon">📤</span>
+                    <span class="folder-name">Sent</span>
+                </a>
+                <a href="#" class="folder-item" data-folder="Drafts">
+                    <span class="folder-icon">📝</span>
+                    <span class="folder-name">Drafts</span>
+                </a>
+                <a href="#" class="folder-item" data-folder="Trash">
+                    <span class="folder-icon">🗑️</span>
+                    <span class="folder-name">Trash</span>
+                </a>
+            </nav>
+            <button id="compose-btn" class="btn btn-primary btn-compose">✏️ Compose</button>
+        </div>
+
+        <!-- Message List -->
+        <div class="message-list-container">
+            <div class="message-list-header">
+                <h3 id="current-folder">Inbox</h3>
+                <button id="refresh-btn" class="btn btn-sm">🔄 Refresh</button>
+            </div>
+            <div id="message-list" class="message-list">
+                <div class="empty-state">
+                    <p>No messages in this folder</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Message View -->
+        <div class="message-view hidden">
+            <div class="message-view-header">
+                <button id="back-btn" class="btn btn-sm">← Back</button>
+                <div class="message-actions">
+                    <button id="reply-btn" class="btn btn-sm">↩️ Reply</button>
+                    <button id="delete-btn" class="btn btn-sm btn-danger">🗑️ Delete</button>
+                </div>
+            </div>
+            <div class="message-meta">
+                <h3 id="message-subject"></h3>
+                <div class="message-info">
+                    <span id="message-from"></span>
+                    <span id="message-date"></span>
+                </div>
+            </div>
+            <div id="message-body" class="message-body"></div>
+        </div>
+
+        <!-- Compose Modal -->
+        <div id="compose-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Compose Email</h3>
+                    <button id="close-compose" class="btn btn-sm">✕</button>
+                </div>
+                <form id="compose-form">
+                    <div class="form-group">
+                        <label for="compose-to">To</label>
+                        <input type="email" id="compose-to" required placeholder="recipient@example.com">
+                    </div>
+                    <div class="form-group">
+                        <label for="compose-subject">Subject</label>
+                        <input type="text" id="compose-subject" required placeholder="Subject">
+                    </div>
+                    <div class="form-group">
+                        <label for="compose-body">Message</label>
+                        <textarea id="compose-body" rows="10" required placeholder="Write your message..."></textarea>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" id="cancel-compose" class="btn">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Send</button>
+                    </div>
+                    <div id="compose-error" class="error-message hidden"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="/web/js/app.js"></script>
+</body>
+</html>
