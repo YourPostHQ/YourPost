@@ -4,12 +4,12 @@ A lightweight mail server written in Zig, supporting SMTP, POP3, IMAP, and HTTP 
 
 ## Features
 
-- **SMTP Server** - Receive emails (port 25/587)
+- **SMTP Server** - Receive emails (port 25 for incoming, port 587 for mail client submission)
 - **POP3 Server** - Retrieve emails (port 110)
 - **IMAP Server** - Modern email access (port 143)
 - **HTTP API** - RESTful API for mailbox management
 - **Cloudflare Email Worker** - Forward emails from Cloudflare to your server
-- **SQLite Storage** - Per-user mailbox storage
+- **SQLite Storage** - Per-user mailbox storage with multi-domain support
 - **Free/Libre Software** - AGPLv3 licensed
 
 ## Quick Start
@@ -24,12 +24,18 @@ zig build
 ### 2. Run the Server
 
 ```bash
-# Use non-privileged ports (recommended)
-YP_SMTP_PORT=2525 YP_POP3_PORT=2110 YP_IMAP_PORT=2143 YP_API_PORT=9000 ./zig-out/bin/yourpost
+# Use non-privileged ports (recommended for development)
+YP_SMTP_PORT=2525 YP_SUBMISSION_PORT=2587 YP_POP3_PORT=2110 YP_IMAP_PORT=2143 YP_API_PORT=9000 ./zig-out/bin/yourpost
 
-# Or use default ports (requires root)
+# Or use default ports (requires root/sudo for ports < 1024)
 sudo ./zig-out/bin/yourpost
 ```
+
+**Note:** The server uses two SMTP ports:
+- **Port 25** (or `YP_SMTP_PORT`): Standard SMTP for receiving emails from other mail servers
+- **Port 587** (or `YP_SUBMISSION_PORT`): Submission port for mail clients to send outgoing emails
+
+Ports below 1024 are privileged and require root. For development, use non-privileged alternatives (e.g., 2525, 2587).
 
 ### 3. Create a User
 
@@ -57,19 +63,28 @@ curl -X POST http://localhost:9000/incoming \
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `YP_SMTP_PORT` | SMTP port | 25 |
-| `YP_POP3_PORT` | POP3 port | 110 |
-| `YP_IMAP_PORT` | IMAP port | 143 |
-| `YP_API_PORT` | HTTP API port | 9000 |
-| `YP_HOSTNAME` | Server hostname | localhost |
-| `YP_DATA_DIR` | Data directory | data |
-| `YP_SMTP_RELAY_HOST` | Outgoing SMTP relay host | (disabled) |
-| `YP_SMTP_RELAY_PORT` | Outgoing SMTP relay port | 587 |
-| `YP_SMTP_RELAY_USER` | SMTP relay authentication username | (disabled) |
-| `YP_SMTP_RELAY_PASSWORD` | SMTP relay authentication password/API key | (disabled) |
-| `YP_SMTP_RELAY_USE_TLS` | Use TLS for SMTP relay | true |
+| Variable | Description | Default | Privileged? |
+|----------|-------------|---------|-------------|
+| `YP_SMTP_PORT` | SMTP port (incoming from other servers) | 25 | ✅ Yes |
+| `YP_SUBMISSION_PORT` | SMTP submission port (mail clients) | 587 | ✅ Yes |
+| `YP_POP3_PORT` | POP3 port | 110 | ✅ Yes |
+| `YP_IMAP_PORT` | IMAP port | 143 | ✅ Yes |
+| `YP_API_PORT` | HTTP API port | 9000 | No |
+| `YP_HOSTNAME` | Server hostname | localhost | |
+| `YP_DATA_DIR` | Data directory | data | |
+| `YP_SMTP_RELAY_HOST` | Outgoing SMTP relay host | (disabled) | |
+| `YP_SMTP_RELAY_PORT` | Outgoing SMTP relay port | 587 | |
+| `YP_SMTP_RELAY_USER` | SMTP relay authentication username | (disabled) | |
+| `YP_SMTP_RELAY_PASSWORD` | SMTP relay authentication password/API key | (disabled) | |
+| `YP_SMTP_RELAY_USE_TLS` | Use TLS for SMTP relay | true | |
+
+**Note:** Ports marked as privileged (< 1024) require root privileges. For development, use non-privileged ports:
+```bash
+export YP_SMTP_PORT=2525
+export YP_SUBMISSION_PORT=2587
+export YP_POP3_PORT=2110
+export YP_IMAP_PORT=2143
+```
 
 ### Outgoing SMTP Relay Configuration
 
@@ -147,8 +162,10 @@ GET /mailboxes/{user}/folders
 
 Each user has a separate SQLite database at:
 ```
-data/mailboxes/{username}.db
+data/mailboxes/{email}.db
 ```
+
+**Note:** The filename uses the **full email address** (e.g., `user@example.com.db`), not just the username. This enables multi-domain support where the same username can exist on different domains.
 
 The database contains:
 - `folders` table - IMAP folders (INBOX, Sent, Trash, etc.)
@@ -167,9 +184,9 @@ Cloudflare Tunnel (cloudflared)
      ↓
 yourpost HTTP API (/incoming)
      ↓
-SQLite Mailbox (data/mailboxes/{user}.db)
+SQLite Mailbox (data/mailboxes/{email}.db)
      ↓
-POP3/IMAP Access
+POP3/IMAP Access (multi-domain support)
 ```
 
 ## Project Structure

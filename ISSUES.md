@@ -6,9 +6,10 @@ This file tracks known bugs, issues, and improvement opportunities in the YourPo
 
 ## Issue #1: HTTP API Multi-Domain Data Isolation Bug
 
-**Status:** 🔴 Open  
+**Status:** 🟢 Closed  
 **Severity:** Critical  
 **Discovered:** 2026-05-02  
+**Fixed:** 2026-05-02  
 **Affected Component:** `src/api/server.zig` (HTTP API `/incoming` endpoint)
 
 ### Description
@@ -38,16 +39,19 @@ const username = recipient[0..at_pos];  // ← BUG: Only extracts "sameuser"
 - IMAP (`src/imap/session.zig:82`): ✓ Uses full email for DB path  
 - POP3 (`src/pop3/session.zig:63`): ✓ Uses full email for DB path
 
-### Fix Required
+### Fix Applied
 
-Change line 186 in `src/api/server.zig`:
+**Change in `src/api/server.zig`:**
 ```zig
 // FROM (buggy):
+const at_pos = std.mem.indexOfScalar(u8, recipient, '@') orelse { ... };
 const username = recipient[0..at_pos];
 
 // TO (correct):
 const username = recipient;  // Use full email address
 ```
+
+The fix removes the `@` extraction logic and now uses the full email address as the username, consistent with SMTP, IMAP, and POP3 implementations.
 
 ### Verification Steps
 
@@ -125,10 +129,11 @@ error: SMTP: Cannot bind to privileged port 587 (ports < 1024 require root). Use
 
 ## Issue #3: SMTP Submission Port Documentation & Default
 
-**Status:** 🟡 In Progress  
+**Status:** � Closed  
 **Severity:** Medium  
 **Discovered:** 2026-05-02  
-**Affected Component:** `src/config.zig`, `src/main.zig`, documentation
+**Fixed:** 2026-05-02  
+**Affected Component:** `README.md`, `src/config.zig`, `src/main.zig`
 
 ### Description
 
@@ -151,13 +156,17 @@ The SMTP submission port (587) is now started alongside the standard SMTP port (
 
 **Issue:** Port 587 is privileged (requires root or capabilities), causing `errno: 13` (EACCES) for regular users.
 
-### Fix Required
+### Fix Applied
 
-1. Add documentation to README.md explaining the two SMTP ports:
-   - Port 25: Standard SMTP (incoming mail from other servers)
-   - Port 587: Submission port (mail clients sending outgoing mail)
-2. Recommend non-privileged ports for development (e.g., 2587)
-3. Add example to `YP_SUBMISSION_PORT` in documentation
+Updated `README.md` with:
+1. Clear explanation of two SMTP ports (25 for incoming, 587 for submission)
+2. Added `YP_SUBMISSION_PORT` to environment variables table with privileged port warning
+3. Provided non-privileged port examples for development (2525, 2587, 2110, 2143)
+4. Updated mailbox storage documentation to clarify full email addresses are used (multi-domain support)
+5. Updated architecture diagram to show `{email}.db` instead of `{user}.db`
+
+### Files Modified
+- `README.md` - Complete documentation update
 
 ### Verification Steps
 
