@@ -12,6 +12,7 @@ pub const Deps = struct {
     hostname: []const u8,
     data_dir: []const u8,
     api_port: u16,
+    api_key: ?[]const u8,
     io: std.Io,
 };
 
@@ -21,9 +22,21 @@ const ConnCtx = struct {
     deps: Deps,
 };
 
-pub fn listen(io: std.Io, deps: Deps) !void {
+pub fn listen(io: std.Io, deps: Deps) void {
+    // Check for privileged port before attempting to bind (prevents noisy stack trace)
+    if (deps.api_port < 1024) {
+        std.log.err("API: Cannot bind to privileged port {d} (ports < 1024 require root). Use port > 1024 or run with sudo.", .{deps.api_port});
+        return;
+    }
     const addr: std.Io.net.IpAddress = .{ .ip4 = std.Io.net.Ip4Address.unspecified(deps.api_port) };
-    var server = try std.Io.net.IpAddress.listen(&addr, io, .{ .reuse_address = true });
+    var server = std.Io.net.IpAddress.listen(&addr, io, .{ .reuse_address = true }) catch |err| {
+        if (err == error.AddressInUse) {
+            std.log.err("API: Port {d} already in use.", .{deps.api_port});
+        } else {
+            std.log.err("API: Failed to bind to port {d}: {}", .{ deps.api_port, err });
+        }
+        return;
+    };
     defer server.deinit(io);
     std.log.info("HTTP API listening on :{d}", .{deps.api_port});
 
@@ -32,7 +45,11 @@ pub fn listen(io: std.Io, deps: Deps) !void {
             std.log.warn("API accept error: {}", .{err});
             continue;
         };
-        const ctx = try deps.alloc.create(ConnCtx);
+        const ctx = deps.alloc.create(ConnCtx) catch |err| {
+            std.log.warn("API alloc: {}", .{err});
+            stream.socket.close(io);
+            continue;
+        };
         ctx.* = .{ .stream = stream, .io = io, .deps = deps };
         const t = std.Thread.spawn(.{}, handleConn, .{ctx}) catch |err| {
             std.log.warn("API thread spawn: {}", .{err});
@@ -64,8 +81,9 @@ fn handleConn(ctx: *ConnCtx) void {
     const method = line[0..method_end];
     const path = line[method_end + 1 .. method_end + 1 + path_end];
 
-    // Read headers and extract Content-Length
+    // Read headers and extract Content-Length and Authorization
     var content_length: ?usize = null;
+    var auth_header: ?[]const u8 = null;
     while (true) {
         const header = reader.takeDelimiterInclusive('\n') catch return;
         if (header.len <= 2) break;
@@ -74,11 +92,30 @@ fn handleConn(ctx: *ConnCtx) void {
             const value = std.mem.trim(u8, trimmed[15..], " ");
             content_length = std.fmt.parseInt(usize, value, 10) catch null;
         }
+        if (std.mem.startsWith(u8, trimmed, "Authorization:")) {
+            auth_header = std.mem.trim(u8, trimmed[14..], " ");
+        }
+    }
+
+    // Check API key if configured
+    if (ctx.deps.api_key) |key| {
+        const expected = std.fmt.allocPrint(ctx.deps.alloc, "Bearer {s}", .{key}) catch return;
+        defer ctx.deps.alloc.free(expected);
+        if (auth_header == null or !std.mem.eql(u8, auth_header.?, expected)) {
+            std.log.warn("Unauthorized /incoming request", .{});
+            writer.print("HTTP/1.1 401 Unauthorized\r\n", .{}) catch return;
+            writer.writeAll("Content-Length: 0\r\n\r\n") catch return;
+            return;
+        }
     }
 
     if (std.mem.eql(u8, method, "GET")) {
         if (std.mem.eql(u8, path, "/health")) {
             writeJsonResponse(writer, 200, makeHealthBody()) catch return;
+            return;
+        }
+        if (std.mem.eql(u8, path, "/users")) {
+            handleListUsers(writer, ctx) catch return;
             return;
         }
         if (std.mem.startsWith(u8, path, "/mailboxes/") and endsWith(path, "/folders")) {
@@ -91,6 +128,18 @@ fn handleConn(ctx: *ConnCtx) void {
     if (std.mem.eql(u8, method, "POST")) {
         if (std.mem.eql(u8, path, "/incoming")) {
             handleIncoming(writer, ctx, reader, content_length) catch return;
+            return;
+        }
+        if (std.mem.eql(u8, path, "/users")) {
+            handleCreateUser(writer, ctx, reader, content_length) catch return;
+            return;
+        }
+    }
+
+    if (std.mem.eql(u8, method, "DELETE")) {
+        if (std.mem.startsWith(u8, path, "/users/")) {
+            const email = path[7..];
+            handleDeactivateUser(writer, ctx, email) catch return;
             return;
         }
     }
@@ -176,14 +225,8 @@ fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
         return;
     }
 
-    // Extract local part (username) from recipient
-    const at_pos = std.mem.indexOfScalar(u8, recipient, '@') orelse {
-        std.log.err("No @ in recipient: {s}", .{recipient});
-        try writer.print("HTTP/1.1 400 Bad Request\r\n", .{});
-        try writer.writeAll("Content-Length: 0\r\n\r\n");
-        return;
-    };
-    const username = recipient[0..at_pos];
+    // Use full email address as username for multi-domain support
+    const username = recipient;
     std.log.info("Delivering email to user: {s}", .{username});
 
     // Ensure mailboxes directory exists
@@ -219,6 +262,17 @@ fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
         return;
     };
 
+    const quota = ctx.deps.global_db.getUserQuota(recipient) catch 0;
+    if (quota > 0) {
+        const used = udb.totalMailboxSize() catch 0;
+        if (used >= quota) {
+            std.log.warn("Quota exceeded for {s}: {d}/{d} bytes", .{ recipient, used, quota });
+            try writer.print("HTTP/1.1 452 Requested action not taken: insufficient mailbox storage\r\n", .{});
+            try writer.writeAll("Content-Length: 0\r\n\r\n");
+            return;
+        }
+    }
+
     const now: i64 = @intCast(c.time(null));
     std.log.info("Appending message to INBOX, size={d}", .{email_body.len});
     _ = udb.appendMessage(folder.id, email_body, .{ .recent = true }, now) catch |err| {
@@ -234,6 +288,68 @@ fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
     try writer.writeAll("{\"status\":\"delivered\"}");
     try writer.flush();
     std.log.info("Email delivered successfully to {s}", .{username});
+}
+
+fn handleListUsers(writer: anytype, ctx: *ConnCtx) !void {
+    const alloc = ctx.deps.alloc;
+    const users = try ctx.deps.global_db.listUsers();
+    defer {
+        for (users) |u| alloc.free(u.email);
+        alloc.free(users);
+    }
+    var buf = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"users\":[");
+    for (users, 0..) |u, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        const item = try std.fmt.allocPrint(alloc, "{{\"email\":\"{s}\",\"active\":{s},\"quota_bytes\":{d}}}", .{
+            u.email,
+            if (u.active) "true" else "false",
+            u.quota_bytes,
+        });
+        defer alloc.free(item);
+        try buf.appendSlice(alloc, item);
+    }
+    try buf.appendSlice(alloc, "]}");
+    try writeJsonResponse(writer, 200, buf.items);
+}
+
+fn handleCreateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize) !void {
+    const alloc = ctx.deps.alloc;
+    const body_size = content_length orelse 4096;
+    if (body_size > 1024 * 1024) {
+        try writer.print("HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n", .{});
+        return;
+    }
+    const body = try alloc.alloc(u8, body_size);
+    defer alloc.free(body);
+    var bytes_read: usize = 0;
+    while (bytes_read < body_size) {
+        const slice: []u8 = body[bytes_read..];
+        var slices: [1][]u8 = .{slice};
+        const n = reader.readVec(&slices) catch break;
+        if (n == 0) break;
+        bytes_read += n;
+    }
+    const CreateUserReq = struct { email: []const u8, password: []const u8 };
+    const parsed = std.json.parseFromSlice(CreateUserReq, alloc, body[0..bytes_read], .{}) catch {
+        try writeJsonResponse(writer, 400, "{\"error\":\"invalid json\"}");
+        return;
+    };
+    defer parsed.deinit();
+    ctx.deps.global_db.createUser(parsed.value.email, parsed.value.password) catch {
+        try writeJsonResponse(writer, 409, "{\"error\":\"user already exists\"}");
+        return;
+    };
+    try writeJsonResponse(writer, 201, "{\"status\":\"created\"}");
+}
+
+fn handleDeactivateUser(writer: anytype, ctx: *ConnCtx, email: []const u8) !void {
+    ctx.deps.global_db.deactivateUser(email) catch {
+        try writeJsonResponse(writer, 500, "{\"error\":\"internal error\"}");
+        return;
+    };
+    try writeJsonResponse(writer, 200, "{\"status\":\"deactivated\"}");
 }
 
 fn writeJsonResponse(writer: anytype, status: u16, body: []const u8) !void {

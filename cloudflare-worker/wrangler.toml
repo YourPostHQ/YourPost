@@ -6,6 +6,7 @@ compatibility_date = "2024-01-01"
 # Set your yourpost endpoint
 [vars]
 YOURPOST_URL = "https://yourpost.privatedata.center"
+# YOURPOST_API_KEY = "YOURPOST_API_KEY"
 
 # Or use secrets (recommended):
 # wrangler secret put YOURPOST_URL

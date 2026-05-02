@@ -215,12 +215,18 @@ fn deliverMessage(alloc: std.mem.Allocator, deps: Deps, from: []const u8, rcpts:
     // Deliver to local recipients
     const now: i64 = @intCast(c.time(null));
     for (local_rcpts.items) |rcpt| {
+        const quota = deps.global_db.getUserQuota(rcpt) catch continue;
         const db_path_str = try std.fmt.allocPrint(alloc, "{s}/mailboxes/{s}.db", .{ deps.data_dir, rcpt });
         defer alloc.free(db_path_str);
         const db_path = try alloc.dupeZ(u8, db_path_str);
         defer alloc.free(db_path);
         var udb = UserDb.open(alloc, db_path) catch continue;
         defer udb.close();
+        const used = udb.totalMailboxSize() catch 0;
+        if (used >= quota) {
+            std.log.warn("Quota exceeded for {s}: {d}/{d} bytes", .{ rcpt, used, quota });
+            continue;
+        }
         const folder = (try udb.getFolderByName("INBOX")) orelse continue;
         _ = udb.appendMessage(folder.id, body, .{ .recent = true }, now) catch continue;
     }

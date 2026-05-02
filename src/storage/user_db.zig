@@ -294,6 +294,14 @@ pub const UserDb = struct {
         return uids.toOwnedSlice(self.alloc);
     }
 
+    pub fn totalMailboxSize(self: *UserDb) !i64 {
+        const stmt = try prepare(self.db,
+            "SELECT COALESCE(SUM(size), 0) FROM messages WHERE deleted=0");
+        defer _ = c.sqlite3_finalize(stmt);
+        _ = c.sqlite3_step(stmt);
+        return c.sqlite3_column_int64(stmt, 0);
+    }
+
     // Simple text search across from/subject/body headers
     pub fn search(self: *UserDb, folder_id: i64, query: []const u8) ![]u32 {
         const stmt = try prepare(self.db,
