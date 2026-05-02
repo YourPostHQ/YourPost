@@ -70,6 +70,7 @@ curl -X POST http://localhost:9000/incoming \
 | `YP_POP3_PORT` | POP3 port | 110 | ✅ Yes |
 | `YP_IMAP_PORT` | IMAP port | 143 | ✅ Yes |
 | `YP_API_PORT` | HTTP API port | 9000 | No |
+| `YP_API_KEY` | API key for `/incoming` endpoint | (disabled) | |
 | `YP_HOSTNAME` | Server hostname | localhost | |
 | `YP_DATA_DIR` | Data directory | data | |
 | `YP_SMTP_RELAY_HOST` | Outgoing SMTP relay host | (disabled) | |
@@ -113,20 +114,31 @@ export YP_SMTP_RELAY_USE_TLS=true
 
 ### Cloudflare Email Worker Setup
 
-1. **Deploy the Worker:**
+1. **Generate an API key:**
+   ```bash
+   # Generate a secure random API key
+   openssl rand -hex 32
+   ```
+
+2. **Set the API key on your server:**
+   ```bash
+   export YP_API_KEY=your-generated-api-key-here
+   ./zig-out/bin/yourpost
+   ```
+
+3. **Deploy the Worker with the API key:**
    ```bash
    cd cloudflare-worker
+   npx wrangler secret put YOURPOST_URL https://yourpost.yourdomain.com
+   npx wrangler secret put YOURPOST_API_KEY your-generated-api-key-here
    npx wrangler deploy
    ```
 
-2. **Set the secret:**
-   ```bash
-   npx wrangler secret put YOURPOST_URL https://yourpost.yourdomain.com
-   ```
-
-3. **Configure Email Routing:**
+4. **Configure Email Routing:**
    - Go to Cloudflare Dashboard → Email Routing
    - Add route: `*@yourdomain.com` → Send to Worker → (choose your worker)
+
+**Security Note:** When `YP_API_KEY` is set, the `/incoming` endpoint requires an `Authorization: Bearer <API_KEY>` header. If not set, the endpoint accepts requests without authentication (useful for development).
 
 4. **Set up Cloudflare Tunnel (optional but recommended):**
    ```bash
@@ -148,6 +160,7 @@ Response: {"status":"ok","service":"yourpost"}
 ```
 POST /incoming
 Content-Type: message/rfc822
+Authorization: Bearer <API_KEY> (required if YP_API_KEY is set)
 Body: Raw email content
 
 Response: {"status":"delivered"}

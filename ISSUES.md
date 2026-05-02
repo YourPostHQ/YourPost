@@ -129,7 +129,7 @@ error: SMTP: Cannot bind to privileged port 587 (ports < 1024 require root). Use
 
 ## Issue #3: SMTP Submission Port Documentation & Default
 
-**Status:** � Closed  
+**Status:** 🟢 Closed  
 **Severity:** Medium  
 **Discovered:** 2026-05-02  
 **Fixed:** 2026-05-02  

@@ -12,6 +12,7 @@ pub const Deps = struct {
     hostname: []const u8,
     data_dir: []const u8,
     api_port: u16,
+    api_key: ?[]const u8,
     io: std.Io,
 };
 
@@ -80,8 +81,9 @@ fn handleConn(ctx: *ConnCtx) void {
     const method = line[0..method_end];
     const path = line[method_end + 1 .. method_end + 1 + path_end];
 
-    // Read headers and extract Content-Length
+    // Read headers and extract Content-Length and Authorization
     var content_length: ?usize = null;
+    var auth_header: ?[]const u8 = null;
     while (true) {
         const header = reader.takeDelimiterInclusive('\n') catch return;
         if (header.len <= 2) break;
@@ -89,6 +91,21 @@ fn handleConn(ctx: *ConnCtx) void {
         if (std.mem.startsWith(u8, trimmed, "Content-Length:")) {
             const value = std.mem.trim(u8, trimmed[15..], " ");
             content_length = std.fmt.parseInt(usize, value, 10) catch null;
+        }
+        if (std.mem.startsWith(u8, trimmed, "Authorization:")) {
+            auth_header = std.mem.trim(u8, trimmed[14..], " ");
+        }
+    }
+
+    // Check API key if configured
+    if (ctx.deps.api_key) |key| {
+        const expected = std.fmt.allocPrint(ctx.deps.alloc, "Bearer {s}", .{key}) catch return;
+        defer ctx.deps.alloc.free(expected);
+        if (auth_header == null or !std.mem.eql(u8, auth_header.?, expected)) {
+            std.log.warn("Unauthorized /incoming request", .{});
+            writer.print("HTTP/1.1 401 Unauthorized\r\n", .{}) catch return;
+            writer.writeAll("Content-Length: 0\r\n\r\n") catch return;
+            return;
         }
     }
 
