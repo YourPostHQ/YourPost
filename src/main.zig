@@ -54,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
         .hostname = cfg.hostname,
         .data_dir = cfg.data_dir,
         .api_port = cfg.api_port,
-        .api_key = cfg.api_key,
+        .service_token = cfg.service_token,
         .io = init.io,
     };
 

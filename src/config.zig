@@ -15,7 +15,7 @@ pub const Config = struct {
     api_port: u16,
 
     // API security
-    api_key: ?[]const u8,
+    service_token: ?[]const u8,
 
     // Outgoing SMTP relay configuration
     smtp_relay_host: ?[]const u8,
@@ -34,7 +34,7 @@ pub const Config = struct {
             .pop3_port = envPortOr("YP_POP3_PORT", 110),
             .imap_port = envPortOr("YP_IMAP_PORT", 143),
             .api_port = envPortOr("YP_API_PORT", 9000),
-            .api_key = envOrNull(alloc, "YP_API_KEY"),
+            .service_token = envOrNull(alloc, "YP_SERVICE_TOKEN"),
             .smtp_relay_host = envOrNull(alloc, "YP_SMTP_RELAY_HOST"),
             .smtp_relay_port = envPortOr("YP_SMTP_RELAY_PORT", 587),
             .smtp_relay_user = envOrNull(alloc, "YP_SMTP_RELAY_USER"),

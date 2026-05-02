@@ -12,7 +12,7 @@ pub const Deps = struct {
     hostname: []const u8,
     data_dir: []const u8,
     api_port: u16,
-    api_key: ?[]const u8,
+    service_token: ?[]const u8,
     io: std.Io,
 };
 
@@ -98,7 +98,7 @@ fn handleConn(ctx: *ConnCtx) void {
     }
 
     // Check API key if configured
-    if (ctx.deps.api_key) |key| {
+    if (ctx.deps.service_token) |key| {
         const expected = std.fmt.allocPrint(ctx.deps.alloc, "Bearer {s}", .{key}) catch return;
         defer ctx.deps.alloc.free(expected);
         if (auth_header == null or !std.mem.eql(u8, auth_header.?, expected)) {
