@@ -343,14 +343,28 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
             },
             .idle => {
                 if (state == .not_authenticated) { try noAuth(writer, tag); continue; }
+                const in_selected = state == .selected or state == .selected_readonly;
+                var pre_messages: u32 = 0;
+                var pre_recent: u32 = 0;
+                if (in_selected) {
+                    if (udb_opt.?.folderStatus(selected_folder_id)) |st| {
+                        pre_messages = st.messages;
+                        pre_recent = st.recent;
+                    } else |_| {}
+                }
                 try writer.writeAll("+ idling\r\n");
                 try writer.flush();
-                // In IDLE mode, wait for "DONE" then send completion.
-                // We re-enter the main loop: the bare "DONE" check at top handles it.
-                // For push notifications, a real impl would poll the DB here.
                 const idle_raw = reader.takeDelimiterInclusive('\n') catch break;
                 const idle_line = std.mem.trimEnd(u8, idle_raw, "\r\n ");
                 if (std.ascii.eqlIgnoreCase(idle_line, "DONE")) {
+                    if (in_selected) {
+                        if (udb_opt.?.folderStatus(selected_folder_id)) |post| {
+                            if (post.messages != pre_messages or post.recent != pre_recent) {
+                                try writer.print("* {d} EXISTS\r\n", .{post.messages});
+                                try writer.print("* {d} RECENT\r\n", .{post.recent});
+                            }
+                        } else |_| {}
+                    }
                     try writer.print("{s} OK IDLE terminated\r\n", .{tag});
                 } else {
                     try writer.print("{s} BAD Expected DONE\r\n", .{tag});
@@ -426,12 +440,8 @@ fn writeFetchAtt(writer: anytype, att: parser.FetchAtt, m: @import("../storage/u
             try writer.print("BODY{s} {{{d}}}\r\n", .{ sect, m.raw.len });
             try writer.writeAll(m.raw);
         },
-        .envelope => {
-            try writer.writeAll("ENVELOPE (NIL NIL NIL NIL NIL NIL NIL NIL NIL NIL)");
-        },
-        .bodystructure => {
-            try writer.writeAll("BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" 0 0)");
-        },
+        .envelope => try writeEnvelope(writer, m.raw),
+        .bodystructure => try writeBodystructure(writer, m.raw, m.size),
         .all => {
             const fstr = m.flags.toImap(buf);
             try writer.print("FLAGS ({s}) INTERNALDATE \"{d}\" RFC822.SIZE {d} ENVELOPE NIL", .{ fstr, m.internaldate, m.size });
@@ -445,6 +455,124 @@ fn writeFetchAtt(writer: anytype, att: parser.FetchAtt, m: @import("../storage/u
             try writer.print("FLAGS ({s}) INTERNALDATE \"{d}\" RFC822.SIZE {d} ENVELOPE NIL BODY NIL", .{ fstr, m.internaldate, m.size });
         },
     }
+}
+
+fn extractHeader(raw: []const u8, field: []const u8) []const u8 {
+    const hdr_end = std.mem.indexOf(u8, raw, "\r\n\r\n") orelse raw.len;
+    var it = std.mem.splitSequence(u8, raw[0..hdr_end], "\r\n");
+    while (it.next()) |line| {
+        if (std.ascii.startsWithIgnoreCase(line, field))
+            return std.mem.trim(u8, line[field.len..], " \t");
+    }
+    return "";
+}
+
+fn writeImapString(writer: anytype, val: []const u8) !void {
+    if (val.len == 0) {
+        try writer.writeAll("NIL");
+        return;
+    }
+    try writer.writeByte('"');
+    for (val) |ch| {
+        if (ch == '"' or ch == '\\') try writer.writeByte('\\');
+        if (ch >= 0x20 and ch < 0x7f) try writer.writeByte(ch);
+    }
+    try writer.writeByte('"');
+}
+
+fn writeImapAddress(writer: anytype, addr_raw: []const u8) !void {
+    const addr = std.mem.trim(u8, addr_raw, " \t");
+    var name: []const u8 = "";
+    var user: []const u8 = addr;
+    var host: []const u8 = "";
+    if (std.mem.indexOf(u8, addr, "<")) |lt| {
+        if (std.mem.lastIndexOf(u8, addr, ">")) |gt| {
+            var n = std.mem.trim(u8, addr[0..lt], " \t");
+            if (n.len >= 2 and n[0] == '"' and n[n.len - 1] == '"') n = n[1 .. n.len - 1];
+            name = n;
+            const email = addr[lt + 1 .. gt];
+            if (std.mem.indexOf(u8, email, "@")) |at| {
+                user = email[0..at];
+                host = email[at + 1 ..];
+            } else {
+                user = email;
+            }
+        }
+    } else if (std.mem.indexOf(u8, addr, "@")) |at| {
+        user = addr[0..at];
+        host = addr[at + 1 ..];
+    }
+    try writer.writeByte('(');
+    try writeImapString(writer, name);
+    try writer.writeAll(" NIL ");
+    try writeImapString(writer, user);
+    try writer.writeByte(' ');
+    try writeImapString(writer, host);
+    try writer.writeByte(')');
+}
+
+fn writeImapAddressList(writer: anytype, val: []const u8) !void {
+    if (val.len == 0) {
+        try writer.writeAll("NIL");
+        return;
+    }
+    try writer.writeByte('(');
+    var it = std.mem.splitScalar(u8, val, ',');
+    while (it.next()) |addr| try writeImapAddress(writer, addr);
+    try writer.writeByte(')');
+}
+
+fn writeEnvelope(writer: anytype, raw: []const u8) !void {
+    const from = extractHeader(raw, "From:");
+    const sender = extractHeader(raw, "Sender:");
+    const reply_to = extractHeader(raw, "Reply-To:");
+    try writer.writeAll("ENVELOPE (");
+    try writeImapString(writer, extractHeader(raw, "Date:"));
+    try writer.writeByte(' ');
+    try writeImapString(writer, extractHeader(raw, "Subject:"));
+    try writer.writeByte(' ');
+    try writeImapAddressList(writer, from);
+    try writer.writeByte(' ');
+    try writeImapAddressList(writer, if (sender.len > 0) sender else from);
+    try writer.writeByte(' ');
+    try writeImapAddressList(writer, if (reply_to.len > 0) reply_to else from);
+    try writer.writeByte(' ');
+    try writeImapAddressList(writer, extractHeader(raw, "To:"));
+    try writer.writeByte(' ');
+    try writeImapAddressList(writer, extractHeader(raw, "Cc:"));
+    try writer.writeByte(' ');
+    try writeImapAddressList(writer, extractHeader(raw, "Bcc:"));
+    try writer.writeByte(' ');
+    try writeImapString(writer, extractHeader(raw, "In-Reply-To:"));
+    try writer.writeByte(' ');
+    try writeImapString(writer, extractHeader(raw, "Message-ID:"));
+    try writer.writeByte(')');
+}
+
+fn writeBodystructure(writer: anytype, raw: []const u8, size: u32) !void {
+    const ct = extractHeader(raw, "Content-Type:");
+    var media_type: []const u8 = "TEXT";
+    var media_subtype: []const u8 = "PLAIN";
+    var charset: []const u8 = "US-ASCII";
+    if (ct.len > 0) {
+        const semi = std.mem.indexOfScalar(u8, ct, ';') orelse ct.len;
+        const type_part = std.mem.trim(u8, ct[0..semi], " \t");
+        if (std.mem.indexOf(u8, type_part, "/")) |slash| {
+            media_type = std.mem.trim(u8, type_part[0..slash], " \t");
+            media_subtype = std.mem.trim(u8, type_part[slash + 1 ..], " \t");
+        }
+        if (std.mem.indexOf(u8, ct, "charset=")) |cs| {
+            var cs_val = ct[cs + 8 ..];
+            if (cs_val.len > 0 and cs_val[0] == '"') cs_val = cs_val[1..];
+            const cs_end = std.mem.indexOfAny(u8, cs_val, "\";\r\n ") orelse cs_val.len;
+            charset = cs_val[0..cs_end];
+        }
+    }
+    var lines: u32 = 0;
+    for (raw) |ch| if (ch == '\n') { lines += 1; };
+    try writer.print("BODYSTRUCTURE (\"{s}\" \"{s}\" (\"CHARSET\" \"{s}\") NIL NIL \"7BIT\" {d} {d})", .{
+        media_type, media_subtype, charset, size, lines,
+    });
 }
 
 fn seqSetContains(seqset: []const parser.SeqRange, n: u32) bool {

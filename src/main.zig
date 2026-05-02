@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
     defer alloc.free(global_db_path_str);
     const global_db_path = try alloc.dupeZ(u8, global_db_path_str);
     defer alloc.free(global_db_path);
-    var global_db = try GlobalDb.open(global_db_path);
+    var global_db = try GlobalDb.open(alloc, init.io, global_db_path);
     defer global_db.close();
 
     const smtp_deps = smtp.Deps{
@@ -57,13 +57,30 @@ pub fn main(init: std.process.Init) !void {
         .io = init.io,
     };
 
-    (try std.Thread.spawn(.{}, smtp.listen, .{ init.io, cfg.smtp_port, smtp_deps })).detach();
-    (try std.Thread.spawn(.{}, pop3.listen, .{ init.io, cfg.pop3_port, pop3_deps })).detach();
-    (try std.Thread.spawn(.{}, imap.listen, .{ init.io, cfg.imap_port, imap_deps })).detach();
-    (try std.Thread.spawn(.{}, api.listen, .{ init.io, api_deps })).detach();
+    (std.Thread.spawn(.{}, smtp.listen, .{ init.io, cfg.smtp_port, smtp_deps }) catch |err| {
+        std.log.err("Failed to spawn SMTP thread: {}", .{err});
+        return;
+    }).detach();
+    (std.Thread.spawn(.{}, smtp.listen, .{ init.io, cfg.smtp_submission_port, smtp_deps }) catch |err| {
+        std.log.err("Failed to spawn SMTP submission thread: {}", .{err});
+        return;
+    }).detach();
+    (std.Thread.spawn(.{}, pop3.listen, .{ init.io, cfg.pop3_port, pop3_deps }) catch |err| {
+        std.log.err("Failed to spawn POP3 thread: {}", .{err});
+        return;
+    }).detach();
+    (std.Thread.spawn(.{}, imap.listen, .{ init.io, cfg.imap_port, imap_deps }) catch |err| {
+        std.log.err("Failed to spawn IMAP thread: {}", .{err});
+        return;
+    }).detach();
+    (std.Thread.spawn(.{}, api.listen, .{ init.io, api_deps }) catch |err| {
+        std.log.err("Failed to spawn API thread: {}", .{err});
+        return;
+    }).detach();
 
-    std.log.info("yourpost started on SMTP :{d}, POP3 :{d}, IMAP :{d}, API :{d}", .{
+    std.log.info("yourpost started on SMTP :{d}/{d}, POP3 :{d}, IMAP :{d}, API :{d}", .{
         cfg.smtp_port,
+        cfg.smtp_submission_port,
         cfg.pop3_port,
         cfg.imap_port,
         cfg.api_port,

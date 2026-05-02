@@ -25,7 +25,7 @@ zig build
 
 ```bash
 # Use non-privileged ports (recommended)
-YP_SMTP_PORT=2525 YP_POP3_PORT=2110 YP_IMAP_PORT=2143 YP_API_PORT=8080 ./zig-out/bin/yourpost
+YP_SMTP_PORT=2525 YP_POP3_PORT=2110 YP_IMAP_PORT=2143 YP_API_PORT=9000 ./zig-out/bin/yourpost
 
 # Or use default ports (requires root)
 sudo ./zig-out/bin/yourpost
@@ -45,10 +45,10 @@ sqlite3 data/global.db "INSERT OR IGNORE INTO domains (domain) VALUES ('yourdoma
 
 ```bash
 # Health check
-curl http://localhost:8080/health
+curl http://localhost:9000/health
 
 # Send email via HTTP API (Cloudflare Worker uses this)
-curl -X POST http://localhost:8080/incoming \
+curl -X POST http://localhost:9000/incoming \
   -H "Content-Type: message/rfc822" \
   --data-binary @email.eml
 ```
@@ -62,7 +62,7 @@ curl -X POST http://localhost:8080/incoming \
 | `YP_SMTP_PORT` | SMTP port | 25 |
 | `YP_POP3_PORT` | POP3 port | 110 |
 | `YP_IMAP_PORT` | IMAP port | 143 |
-| `YP_API_PORT` | HTTP API port | 8080 |
+| `YP_API_PORT` | HTTP API port | 9000 |
 | `YP_HOSTNAME` | Server hostname | localhost |
 | `YP_DATA_DIR` | Data directory | data |
 | `YP_SMTP_RELAY_HOST` | Outgoing SMTP relay host | (disabled) |
@@ -118,7 +118,7 @@ export YP_SMTP_RELAY_USE_TLS=true
    cloudflared tunnel login
    cloudflared tunnel create yourpost
    cloudflared tunnel route-dns yourpost yourdomain.com
-   cloudflared tunnel ingress http://localhost:8080
+   cloudflared tunnel ingress http://localhost:9000
    ```
 
 ## API Endpoints
@@ -208,12 +208,12 @@ AGPLv3 - See LICENSE file for details.
 1. Check Cloudflare Worker logs: `npx wrangler tail`
 2. Check yourpost server logs
 3. Verify Cloudflare Tunnel is running: `cloudflared tunnel list`
-4. Test locally: `curl -X POST http://localhost:8080/incoming -H "Content-Type: message/rfc822" --data-binary @test.eml`
+4. Test locally: `curl -X POST http://localhost:9000/incoming -H "Content-Type: message/rfc822" --data-binary @test.eml`
 
 ### Build errors?
 - Make sure you're using Zig 0.16.0 or later
 - Check that sqlite3 development files are installed: `apt-get install libsqlite3-dev`
 
 ### Permission denied?
-- Use non-privileged ports (2525, 2110, 2143, 8080)
+- Use non-privileged ports (2525, 2110, 2143, 9000)
 - Or run with sudo for standard ports (25, 110, 143, 80)

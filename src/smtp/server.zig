@@ -9,9 +9,21 @@ const ConnCtx = struct {
     deps: Deps,
 };
 
-pub fn listen(io: std.Io, port: u16, deps: Deps) !void {
+pub fn listen(io: std.Io, port: u16, deps: Deps) void {
+    // Check for privileged port before attempting to bind (prevents noisy stack trace)
+    if (port < 1024) {
+        std.log.err("SMTP: Cannot bind to privileged port {d} (ports < 1024 require root). Use port > 1024 or run with sudo.", .{port});
+        return;
+    }
     const addr: std.Io.net.IpAddress = .{ .ip4 = std.Io.net.Ip4Address.unspecified(port) };
-    var server = try std.Io.net.IpAddress.listen(&addr, io, .{ .reuse_address = true });
+    var server = std.Io.net.IpAddress.listen(&addr, io, .{ .reuse_address = true }) catch |err| {
+        if (err == error.AddressInUse) {
+            std.log.err("SMTP: Port {d} already in use.", .{port});
+        } else {
+            std.log.err("SMTP: Failed to bind to port {d}: {}", .{ port, err });
+        }
+        return;
+    };
     defer server.deinit(io);
     std.log.info("SMTP listening on :{d}", .{port});
 
@@ -20,7 +32,11 @@ pub fn listen(io: std.Io, port: u16, deps: Deps) !void {
             std.log.warn("SMTP accept error: {}", .{err});
             continue;
         };
-        const ctx = try deps.alloc.create(ConnCtx);
+        const ctx = deps.alloc.create(ConnCtx) catch |err| {
+            std.log.warn("SMTP alloc error: {}", .{err});
+            stream.socket.close(io);
+            continue;
+        };
         ctx.* = .{ .stream = stream, .io = io, .deps = deps };
         const t = std.Thread.spawn(.{}, handleConn, .{ctx}) catch |err| {
             std.log.warn("SMTP thread spawn: {}", .{err});
