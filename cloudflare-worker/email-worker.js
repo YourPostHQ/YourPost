@@ -5,7 +5,7 @@
  * 1. Create a new Cloudflare Worker
  * 2. Copy this code into the worker
  * 3. Set the YOURPOST_URL secret: wrangler secret put YOURPOST_URL https://yourpost.privatedata.center
- * 4. Set the YOURPOST_API_KEY secret: wrangler secret put YOURPOST_API_KEY your-generated-api-key
+ * 4. Set the YOURPOST_SERVICE_TOKEN secret: wrangler secret put YOURPOST_SERVICE_TOKEN your-generated-api-key
  * 5. Set up Email Routing in Cloudflare Dashboard:
  *    - Go to Email Routing > Catch-all address
  *    - Select "Send to a Worker" and choose this worker
@@ -36,8 +36,8 @@ export default {
       };
 
       // Add API key if configured
-      if (env.YOURPOST_API_KEY) {
-        headers['Authorization'] = `Bearer ${env.YOURPOST_API_KEY}`;
+      if (env.YOURPOST_SERVICE_TOKEN) {
+        headers['Authorization'] = `Bearer ${env.YOURPOST_SERVICE_TOKEN}`;
       }
 
       const response = await fetch(incomingUrl, {

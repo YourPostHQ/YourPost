@@ -28,12 +28,12 @@ cd cloudflare-worker
 npx wrangler secret put YOURPOST_URL
 # Enter: https://yourpost.yourdomain.com
 
-# Set the API key (must match YP_API_KEY on your server)
-npx wrangler secret put YOURPOST_API_KEY
-# Enter the same key you set in YP_API_KEY environment variable
+# Set the API key (must match YP_SERVICE_TOKEN on your server)
+npx wrangler secret put YOURPOST_SERVICE_TOKEN
+# Enter the same key you set in YP_SERVICE_TOKEN environment variable
 ```
 
-**Note:** The `YOURPOST_API_KEY` must match the `YP_API_KEY` environment variable set on your YourPost server.
+**Note:** The `YOURPOST_SERVICE_TOKEN` must match the `YP_SERVICE_TOKEN` environment variable set on your YourPost server.
 
 ### 3. Update wrangler.toml (Optional)
 
@@ -65,7 +65,7 @@ npx wrangler deploy
 
 ```
 ┌─────────────────┐
-│  Email Sender  │
+│  Email Sender   │
 └────────┬────────┘
          │
          ▼
@@ -82,7 +82,7 @@ npx wrangler deploy
 └────────┬────────┘
          │
          │ HTTP POST /incoming
-         │ Authorization: Bearer <API_KEY>
+         │ Authorization: Bearer <SERVICE_TOKEN>
          │ Content-Type: message/rfc822
          ▼
 ┌─────────────────┐
@@ -92,21 +92,21 @@ npx wrangler deploy
          │
          ▼
 ┌─────────────────┐
-│ SQLite         │
-│ Mailbox DB     │
+│ SQLite          │
+│ Mailbox DB      │
 └─────────────────┘
 ```
 
 ## API Key Security
 
-When `YOURPOST_API_KEY` is set in the worker secrets:
+When `YOURPOST_SERVICE_TOKEN` is set in the worker secrets:
 
-1. Worker sends `Authorization: Bearer <API_KEY>` header
-2. YourPost server validates the key (if `YP_API_KEY` is configured)
+1. Worker sends `Authorization: Bearer <SERVICE_TOKEN>` header
+2. YourPost server validates the key (if `YP_SERVICE_TOKEN` is configured)
 3. If valid → email is delivered
 4. If invalid → returns `401 Unauthorized`
 
-**Important:** If `YP_API_KEY` is not set on your server, the `/incoming` endpoint accepts requests without authentication (useful for development).
+**Important:** If `YP_SERVICE_TOKEN` is not set on your server, the `/incoming` endpoint accepts requests without authentication (useful for development).
 
 ## Testing
 
@@ -137,7 +137,7 @@ Send an email to an address routed to your worker. Check:
 | Secret | Required | Description |
 |--------|----------|-------------|
 | `YOURPOST_URL` | Yes | YourPost server URL (e.g., https://yourpost.example.com) |
-| `YOURPOST_API_KEY` | Recommended | API key for authentication (must match server's `YP_API_KEY`) |
+| `YOURPOST_SERVICE_TOKEN` | Recommended | API key for authentication (must match server's `YP_SERVICE_TOKEN`) |
 
 ### wrangler.toml Variables
 
@@ -155,8 +155,8 @@ Send an email to an address routed to your worker. Check:
 
 ### 401 Unauthorized errors
 
-- Verify `YOURPOST_API_KEY` secret is set in the worker
-- Verify `YP_API_KEY` environment variable is set on your YourPost server
+- Verify `YOURPOST_SERVICE_TOKEN` secret is set in the worker
+- Verify `YP_SERVICE_TOKEN` environment variable is set on your YourPost server
 - Ensure both keys match exactly
 
 ### Delivery failures
