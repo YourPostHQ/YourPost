@@ -281,6 +281,19 @@ pub const UserDb = struct {
         return uids.toOwnedSlice(self.alloc);
     }
 
+    // All UIDs in folder order (including \Deleted), used for EXPUNGE seq-num mapping
+    pub fn listMessageUids(self: *UserDb, folder_id: i64) ![]u32 {
+        const stmt = try prepare(self.db,
+            "SELECT uid FROM messages WHERE folder_id=? ORDER BY uid");
+        defer _ = c.sqlite3_finalize(stmt);
+        _ = c.sqlite3_bind_int64(stmt, 1, folder_id);
+        var uids: std.ArrayList(u32) = .{ .items = &.{}, .capacity = 0 };
+        while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+            try uids.append(self.alloc, @intCast(c.sqlite3_column_int(stmt, 0)));
+        }
+        return uids.toOwnedSlice(self.alloc);
+    }
+
     // Simple text search across from/subject/body headers
     pub fn search(self: *UserDb, folder_id: i64, query: []const u8) ![]u32 {
         const stmt = try prepare(self.db,

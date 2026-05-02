@@ -1,6 +1,11 @@
 const std = @import("std");
 const tls = @import("std").crypto.tls;
-const time = std.time;
+const c = @cImport({
+    @cInclude("time.h");
+    @cInclude("sys/socket.h");
+    @cInclude("netdb.h");
+    @cInclude("netinet/in.h");
+});
 const UserDb = @import("../storage/user_db.zig").UserDb;
 const GlobalDb = @import("../storage/global_db.zig").GlobalDb;
 
@@ -59,8 +64,14 @@ pub fn run(
             if (std.mem.eql(u8, line, ".")) {
                 std.log.info("DATA complete, body length: {d} bytes", .{body.items.len});
                 std.log.info("Body preview: '{s}'", .{body.items[0..@min(200, body.items.len)]});
-                try deliverMessage(a, deps, mail_from, recipients.items, body.items);
-                try writer.writeAll("250 OK\r\n");
+                if (deliverMessage(a, deps, mail_from, recipients.items, body.items, authenticated)) |_| {
+                    try writer.writeAll("250 OK\r\n");
+                } else |err| {
+                    switch (err) {
+                        error.AuthRequired => try writer.writeAll("530 5.7.0 Authentication required\r\n"),
+                        else => try writer.writeAll("554 5.0.0 Transaction failed\r\n"),
+                    }
+                }
                 try writer.flush();
                 state = .ehlo;
                 _ = arena.reset(.retain_capacity);
@@ -186,7 +197,7 @@ pub fn run(
     }
 }
 
-fn deliverMessage(alloc: std.mem.Allocator, deps: Deps, from: []const u8, rcpts: [][]const u8, body: []const u8) !void {
+fn deliverMessage(alloc: std.mem.Allocator, deps: Deps, from: []const u8, rcpts: [][]const u8, body: []const u8, authenticated: bool) !void {
     // Separate local and external recipients
     var local_rcpts = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
     defer local_rcpts.deinit(alloc);
@@ -202,7 +213,7 @@ fn deliverMessage(alloc: std.mem.Allocator, deps: Deps, from: []const u8, rcpts:
     }
 
     // Deliver to local recipients
-    const now: i64 = 0; // TODO: get actual timestamp
+    const now: i64 = @intCast(c.time(null));
     for (local_rcpts.items) |rcpt| {
         const db_path_str = try std.fmt.allocPrint(alloc, "{s}/mailboxes/{s}.db", .{ deps.data_dir, rcpt });
         defer alloc.free(db_path_str);
@@ -216,6 +227,10 @@ fn deliverMessage(alloc: std.mem.Allocator, deps: Deps, from: []const u8, rcpts:
 
     // Send to external recipients via relay if configured
     if (external_rcpts.items.len > 0) {
+        if (!authenticated) {
+            std.log.warn("Rejecting relay for unauthenticated client from={s}", .{from});
+            return error.AuthRequired;
+        }
         if (deps.relay_host != null) {
             try sendViaRelay(deps, from, external_rcpts.items, body);
         } else {
@@ -237,8 +252,8 @@ fn sendViaRelay(
     std.log.info("Sending via relay {s}:{d}", .{ relay_host, deps.relay_port });
 
     const use_smtps = deps.relay_port == 465;
-    const addr = std.Io.net.IpAddress.parse("54.205.195.44", deps.relay_port) catch |err| {
-        std.log.err("Failed to parse relay address: {}", .{err});
+    const addr = resolveRelayAddress(deps.alloc, relay_host, deps.relay_port) catch |err| {
+        std.log.err("Failed to resolve relay {s}: {}", .{ relay_host, err });
         return;
     };
 
@@ -453,9 +468,10 @@ fn smtpExchange(
 
 fn authPlain(gdb: *GlobalDb, encoded: []const u8) !bool {
     var decoded_buf: [512]u8 = undefined;
-    std.base64.standard.Decoder.decode(&decoded_buf, encoded) catch return false;
-    const decoded_len = @as(usize, 512); // actual decoded length unknown, use buffer size
-    const decoded: []u8 = decoded_buf[0..decoded_len];
+    const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch return false;
+    if (decoded_len > decoded_buf.len) return false;
+    std.base64.standard.Decoder.decode(decoded_buf[0..decoded_len], encoded) catch return false;
+    const decoded = decoded_buf[0..decoded_len];
     // format: \0username\0password  or  authzid\0username\0password
     const sep1 = std.mem.indexOfScalar(u8, decoded, 0) orelse return false;
     const rest = decoded[sep1 + 1 ..];
@@ -469,6 +485,27 @@ fn extractAddr(line: []const u8) ?[]const u8 {
     const lt = std.mem.indexOfScalar(u8, line, '<') orelse return null;
     const gt = std.mem.indexOfScalarPos(u8, line, lt, '>') orelse return null;
     return line[lt + 1 .. gt];
+}
+
+fn resolveRelayAddress(alloc: std.mem.Allocator, host: []const u8, port: u16) !std.Io.net.IpAddress {
+    const host_z = try alloc.dupeZ(u8, host);
+    defer alloc.free(host_z);
+
+    var hints: c.addrinfo = std.mem.zeroes(c.addrinfo);
+    hints.ai_family = c.AF_INET;
+    hints.ai_socktype = c.SOCK_STREAM;
+
+    var result: ?*c.addrinfo = null;
+    if (c.getaddrinfo(host_z.ptr, null, &hints, &result) != 0) return error.DNSLookupFailed;
+    defer c.freeaddrinfo(result);
+
+    const info = result orelse return error.NoAddresses;
+    const sa_in: *c.sockaddr_in = @ptrCast(@alignCast(info.ai_addr));
+    // sin_addr.s_addr is network-order u32; bitcast gives dotted-decimal octets
+    const octets: [4]u8 = @bitCast(sa_in.sin_addr.s_addr);
+    var buf: [16]u8 = undefined;
+    const ip_str = try std.fmt.bufPrint(&buf, "{d}.{d}.{d}.{d}", .{ octets[0], octets[1], octets[2], octets[3] });
+    return std.Io.net.IpAddress.parse(ip_str, port);
 }
 
 fn toUpperBuf(src: []const u8, buf: []u8) []const u8 {

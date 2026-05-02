@@ -1,4 +1,5 @@
 const std = @import("std");
+const c = @cImport(@cInclude("time.h"));
 const parser = @import("parser.zig");
 const UserDb = @import("../storage/user_db.zig").UserDb;
 const Flags = @import("../storage/user_db.zig").Flags;
@@ -205,7 +206,7 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                     total += slice;
                 }
                 const flags = Flags.fromImap(ap.flags);
-                const now: i64 = 0; // TODO: get actual timestamp
+                const now: i64 = @intCast(c.time(null));
                 _ = udb.appendMessage(folder.id, body_buf[0..total], flags, now) catch {
                     try writer.print("{s} NO APPEND failed\r\n", .{tag});
                     try writer.flush();
@@ -232,11 +233,22 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
             .expunge => {
                 if (state != .selected) { try notSelected(writer, tag); continue; }
                 const udb = &udb_opt.?;
+                // Snapshot all UIDs (including \Deleted) before expunge to map to seq numbers
+                const all_uids = try udb.listMessageUids(selected_folder_id);
+                defer alloc.free(all_uids);
                 const deleted_uids = try udb.expunge(selected_folder_id);
-                for (deleted_uids) |_| {
-                    // For sequence-number-based EXPUNGE, we'd need to track position.
-                    // Simplified: just send * 1 EXPUNGE for each.
-                    try writer.writeAll("* 1 EXPUNGE\r\n");
+                defer alloc.free(deleted_uids);
+                // RFC 3501: send * N EXPUNGE from highest to lowest seq number
+                var i = deleted_uids.len;
+                while (i > 0) {
+                    i -= 1;
+                    const uid = deleted_uids[i];
+                    for (all_uids, 1..) |u, seq| {
+                        if (u == uid) {
+                            try writer.print("* {d} EXPUNGE\r\n", .{seq});
+                            break;
+                        }
+                    }
                 }
                 try writer.print("{s} OK EXPUNGE done\r\n", .{tag});
                 try writer.flush();
@@ -323,7 +335,7 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 const msgs = try udb.listMessages(selected_folder_id);
                 for (msgs, 1..) |m, seq| {
                     if (!seqSetContains(cp.seqset, if (cp.uid) m.uid else @intCast(seq))) continue;
-                    const now: i64 = 0; // TODO: get actual timestamp
+                    const now: i64 = @intCast(c.time(null));
                     _ = udb.appendMessage(dest.id, m.raw, m.flags, now) catch continue;
                 }
                 try writer.print("{s} OK COPY done\r\n", .{tag});

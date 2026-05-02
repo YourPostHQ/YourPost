@@ -81,13 +81,11 @@ fn verifyPassword(password: []const u8, stored: []const u8) bool {
     var salt: [16]u8 = undefined;
     _ = std.fmt.hexToBytes(&salt, stored[0..32]) catch return false;
     const computed = hashPassword(password, &salt);
-    if (stored.len < 33 + computed.len * 2) return false;
-    var hex_buf: [2]u8 = undefined;
+    var hex_buf: [64]u8 = undefined;
     for (computed, 0..) |byte, i| {
-        const hex = std.fmt.bufPrint(&hex_buf, "{x}", .{byte}) catch return false;
-        if (!std.mem.eql(u8, hex, stored[33 + i * 2 .. 33 + i * 2 + hex.len])) return false;
+        _ = std.fmt.bufPrint(hex_buf[i * 2 ..][0..2], "{x:0>2}", .{byte}) catch return false;
     }
-    return true;
+    return std.mem.eql(u8, &hex_buf, stored[33 .. 33 + 64]);
 }
 
 fn exec(db: *c.sqlite3, sql: []const u8) !void {
