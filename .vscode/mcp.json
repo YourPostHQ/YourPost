@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "zig-docs": {
+      "command": "npx",
+      "args": ["-y", "zig-mcp@latest", "--doc-source", "remote", "--version", "0.16.0"]
+    }
+  }
+}
