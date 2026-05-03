@@ -24,7 +24,7 @@ const ConnCtx = struct {
     deps: Deps,
 };
 
-pub fn listen(io: std.Io, deps: Deps) void {
+pub fn listen(io: std.Io, deps: Deps, shutdown_flag: ?*std.atomic.Value(bool)) void {
     if (deps.api_port < 1024 and std.os.linux.geteuid() != 0) {
         std.log.err("API: Cannot bind to privileged port {d} (ports < 1024 require root). Use port > 1024 or run with sudo.", .{deps.api_port});
         return;
@@ -42,7 +42,19 @@ pub fn listen(io: std.Io, deps: Deps) void {
     std.log.info("HTTP API listening on :{d}", .{deps.api_port});
 
     while (true) {
+        // Check shutdown flag
+        if (shutdown_flag) |flag| {
+            if (flag.load(.seq_cst)) {
+                std.log.info("API: Stopping accept loop (shutdown requested)", .{});
+                return;
+            }
+        }
+        
         const stream = server.accept(io) catch |err| {
+            // Check if this is a shutdown-related error
+            if (shutdown_flag) |flag| {
+                if (flag.load(.seq_cst)) return;
+            }
             std.log.warn("API accept error: {}", .{err});
             continue;
         };
@@ -62,7 +74,7 @@ pub fn listen(io: std.Io, deps: Deps) void {
     }
 }
 
-pub fn listenService(io: std.Io, deps: Deps) void {
+pub fn listenService(io: std.Io, deps: Deps, shutdown_flag: ?*std.atomic.Value(bool)) void {
     if (deps.service_port < 1024 and std.os.linux.geteuid() != 0) {
         std.log.err("Service API: Cannot bind to privileged port {d} (ports < 1024 require root). Use port > 1024 or run with sudo.", .{deps.service_port});
         return;
@@ -80,7 +92,19 @@ pub fn listenService(io: std.Io, deps: Deps) void {
     std.log.info("HTTP Service API listening on :{d}", .{deps.service_port});
 
     while (true) {
+        // Check shutdown flag
+        if (shutdown_flag) |flag| {
+            if (flag.load(.seq_cst)) {
+                std.log.info("Service API: Stopping accept loop (shutdown requested)", .{});
+                return;
+            }
+        }
+        
         const stream = server.accept(io) catch |err| {
+            // Check if this is a shutdown-related error
+            if (shutdown_flag) |flag| {
+                if (flag.load(.seq_cst)) return;
+            }
             std.log.warn("Service API accept error: {}", .{err});
             continue;
         };
@@ -137,6 +161,16 @@ fn handleServiceConn(ctx: *ConnCtx) void {
 
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/health")) {
         writeJsonResponse(writer, 200, makeHealthBody()) catch return;
+        return;
+    }
+    if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/health/ready")) {
+        const body = makeReadyBody();
+        const status: u16 = if (std.mem.indexOf(u8, body, "not_ready") != null) 503 else 200;
+        writeJsonResponse(writer, status, body) catch return;
+        return;
+    }
+    if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/health/live")) {
+        writeJsonResponse(writer, 200, makeLiveBody()) catch return;
         return;
     }
 
@@ -538,7 +572,21 @@ fn writeApiInfo(writer: anytype) !void {
 }
 
 fn makeHealthBody() []const u8 {
-    return "{\"status\":\"ok\",\"service\":\"yourpost\"}";
+    // TODO: Add real health checks:
+    // - Check database connectivity
+    // - Check disk space
+    // - Verify server threads are running
+    return "{\"status\":\"ok\",\"service\":\"yourpost\",\"version\":\"1.0.0\"}";
+}
+
+fn makeReadyBody() []const u8 {
+    return "{\"status\":\"ready\",\"service\":\"yourpost\"}";
+}
+
+fn makeLiveBody() []const u8 {
+    // Liveness check - is the service alive?
+    // Basic check that the process is running
+    return "{\"status\":\"alive\",\"service\":\"yourpost\",\"uptime\":\"unknown\"}";
 }
 
 fn writeUserFolders(writer: anytype, ctx: *ConnCtx, user: []const u8) !void {

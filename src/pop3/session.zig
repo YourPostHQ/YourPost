@@ -9,6 +9,16 @@ pub const Deps = struct {
     alloc: std.mem.Allocator,
     hostname: []const u8,
     data_dir: []const u8,
+
+    // TLS configuration for STARTTLS and implicit TLS
+    use_tls: bool = false,
+    tls_cert: ?[]const u8 = null,
+    tls_key: ?[]const u8 = null,
+
+    // Connection limits and timeouts
+    max_connections: usize = 1000,
+    connection_timeout_ms: u32 = 300000, // 5 minutes
+    read_timeout_ms: u32 = 300000, // 5 minutes
 };
 
 pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {

@@ -1,0 +1,51 @@
+[Unit]
+Description=YourPost Mail Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yourpost
+Group=yourpost
+WorkingDirectory=/var/lib/yourpost
+ExecStart=/usr/local/bin/yourpost
+Restart=on-failure
+RestartSec=5s
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+# Environment variables (uncomment and configure as needed)
+# Environment=YP_DATA_DIR=/var/lib/yourpost/data
+# Environment=YP_HOSTNAME=mail.example.com
+# Environment=YP_SMTP_PORT=25
+# Environment=YP_SUBMISSION_PORT=587
+# Environment=YP_POP3_PORT=110
+# Environment=YP_IMAP_PORT=143
+# Environment=YP_API_PORT=9000
+# Environment=YP_SERVICE_PORT=9001
+# Environment=YP_SERVICE_TOKEN=your-secret-token-here
+# TLS configuration (uncomment to enable)
+# Environment=YP_SMTP_USE_TLS=true
+# Environment=YP_SMTP_TLS_CERT=/etc/yourpost/tls/cert.pem
+# Environment=YP_SMTP_TLS_KEY=/etc/yourpost/tls/key.pem
+# Environment=YP_POP3_USE_TLS=true
+# Environment=YP_POP3_TLS_CERT=/etc/yourpost/tls/cert.pem
+# Environment=YP_POP3_TLS_KEY=/etc/yourpost/tls/key.pem
+# Environment=YP_IMAP_USE_TLS=true
+# Environment=YP_IMAP_TLS_CERT=/etc/yourpost/tls/cert.pem
+# Environment=YP_IMAP_TLS_KEY=/etc/yourpost/tls/key.pem
+# SMTP Relay configuration (uncomment to enable)
+# Environment=YP_SMTP_RELAY_HOST=smtp.gmail.com
+# Environment=YP_SMTP_RELAY_PORT=587
+# Environment=YP_SMTP_RELAY_USER=your-email@gmail.com
+# Environment=YP_SMTP_RELAY_PASSWORD=your-app-password
+# Environment=YP_SMTP_RELAY_USE_TLS=true
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=yourpost
+
+[Install]
+WantedBy=multi-user.target

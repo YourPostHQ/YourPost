@@ -28,6 +28,16 @@ pub const Deps = struct {
     relay_user: ?[]const u8,
     relay_password: ?[]const u8,
     relay_use_tls: bool,
+
+    // TLS configuration for STARTTLS and implicit TLS
+    use_tls: bool = false,
+    tls_cert: ?[]const u8 = null,
+    tls_key: ?[]const u8 = null,
+
+    // Connection limits and timeouts
+    max_connections: usize = 1000,
+    connection_timeout_ms: u32 = 300000, // 5 minutes
+    read_timeout_ms: u32 = 300000, // 5 minutes
 };
 
 pub fn run(
@@ -181,6 +191,7 @@ pub fn run(
             try writer.writeAll("250 OK\r\n");
             try writer.flush();
         } else if (std.mem.eql(u8, verb, "STARTTLS")) {
+            // STARTTLS not yet implemented
             try writer.writeAll("454 TLS not available\r\n");
             try writer.flush();
         } else if (std.mem.eql(u8, verb, "QUIT")) {
