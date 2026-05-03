@@ -3,13 +3,13 @@ main = "email-worker.js"
 type = "javascript-email"
 compatibility_date = "2024-01-01"
 
-# Set your yourpost endpoint
+# Service API endpoint (port 9001) — used by this worker for inbound email delivery
 [vars]
-YOURPOST_URL = "https://yourpost.privatedata.center"
-# YOURPOST_SERVICE_TOKEN = "YOURPOST_SERVICE_TOKEN"
+YOURPOST_SERVICE_URL = "http://yourpost.yourdomain.com:9001"
 
-# Or use secrets (recommended):
-# wrangler secret put YOURPOST_URL
+# Use secrets for sensitive values (recommended):
+# wrangler secret put YOURPOST_SERVICE_URL
+# wrangler secret put YOURPOST_SERVICE_TOKEN
 
 [observability]
 enabled = false

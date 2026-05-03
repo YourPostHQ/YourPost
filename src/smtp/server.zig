@@ -10,8 +10,7 @@ const ConnCtx = struct {
 };
 
 pub fn listen(io: std.Io, port: u16, deps: Deps) void {
-    // Check for privileged port before attempting to bind (prevents noisy stack trace)
-    if (port < 1024) {
+    if (port < 1024 and std.os.linux.geteuid() != 0) {
         std.log.err("SMTP: Cannot bind to privileged port {d} (ports < 1024 require root). Use port > 1024 or run with sudo.", .{port});
         return;
     }

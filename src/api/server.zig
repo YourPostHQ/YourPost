@@ -13,6 +13,7 @@ pub const Deps = struct {
     hostname: []const u8,
     data_dir: []const u8,
     api_port: u16,
+    service_port: u16,
     service_token: ?[]const u8,
     io: std.Io,
 };
@@ -24,8 +25,7 @@ const ConnCtx = struct {
 };
 
 pub fn listen(io: std.Io, deps: Deps) void {
-    // Check for privileged port before attempting to bind (prevents noisy stack trace)
-    if (deps.api_port < 1024) {
+    if (deps.api_port < 1024 and std.os.linux.geteuid() != 0) {
         std.log.err("API: Cannot bind to privileged port {d} (ports < 1024 require root). Use port > 1024 or run with sudo.", .{deps.api_port});
         return;
     }
@@ -62,6 +62,107 @@ pub fn listen(io: std.Io, deps: Deps) void {
     }
 }
 
+pub fn listenService(io: std.Io, deps: Deps) void {
+    if (deps.service_port < 1024 and std.os.linux.geteuid() != 0) {
+        std.log.err("Service API: Cannot bind to privileged port {d} (ports < 1024 require root). Use port > 1024 or run with sudo.", .{deps.service_port});
+        return;
+    }
+    const addr: std.Io.net.IpAddress = .{ .ip4 = std.Io.net.Ip4Address.unspecified(deps.service_port) };
+    var server = std.Io.net.IpAddress.listen(&addr, io, .{ .reuse_address = true }) catch |err| {
+        if (err == error.AddressInUse) {
+            std.log.err("Service API: Port {d} already in use.", .{deps.service_port});
+        } else {
+            std.log.err("Service API: Failed to bind to port {d}: {}", .{ deps.service_port, err });
+        }
+        return;
+    };
+    defer server.deinit(io);
+    std.log.info("HTTP Service API listening on :{d}", .{deps.service_port});
+
+    while (true) {
+        const stream = server.accept(io) catch |err| {
+            std.log.warn("Service API accept error: {}", .{err});
+            continue;
+        };
+        const ctx = deps.alloc.create(ConnCtx) catch |err| {
+            std.log.warn("Service API alloc: {}", .{err});
+            stream.socket.close(io);
+            continue;
+        };
+        ctx.* = .{ .stream = stream, .io = io, .deps = deps };
+        const t = std.Thread.spawn(.{}, handleServiceConn, .{ctx}) catch |err| {
+            std.log.warn("Service API thread spawn: {}", .{err});
+            stream.socket.close(io);
+            deps.alloc.destroy(ctx);
+            continue;
+        };
+        t.detach();
+    }
+}
+
+fn handleServiceConn(ctx: *ConnCtx) void {
+    defer {
+        ctx.stream.socket.close(ctx.io);
+        ctx.deps.alloc.destroy(ctx);
+    }
+
+    var read_buf: [4096]u8 = undefined;
+    var write_buf: [4096]u8 = undefined;
+    var net_reader = ctx.stream.reader(ctx.io, &read_buf);
+    var net_writer = ctx.stream.writer(ctx.io, &write_buf);
+    const reader = &net_reader.interface;
+    const writer = &net_writer.interface;
+
+    const request_line = reader.takeDelimiterInclusive('\n') catch return;
+    const line = std.mem.trimEnd(u8, request_line, "\r\n");
+    const method_end = std.mem.indexOfScalar(u8, line, ' ') orelse return;
+    const path_end = std.mem.indexOfScalar(u8, line[method_end + 1 ..], ' ') orelse return;
+    const method = line[0..method_end];
+    const path = line[method_end + 1 .. method_end + 1 + path_end];
+
+    var content_length: ?usize = null;
+    var auth_header: ?[]const u8 = null;
+    while (true) {
+        const header = reader.takeDelimiterInclusive('\n') catch return;
+        if (header.len <= 2) break;
+        const trimmed = std.mem.trim(u8, header, "\r\n");
+        if (std.mem.startsWith(u8, trimmed, "Content-Length:")) {
+            const value = std.mem.trim(u8, trimmed[15..], " ");
+            content_length = std.fmt.parseInt(usize, value, 10) catch null;
+        }
+        if (std.mem.startsWith(u8, trimmed, "Authorization:")) {
+            auth_header = std.mem.trim(u8, trimmed[14..], " ");
+        }
+    }
+
+    if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/health")) {
+        writeJsonResponse(writer, 200, makeHealthBody()) catch return;
+        return;
+    }
+
+    if (std.mem.startsWith(u8, path, "/api/service/")) {
+        if (ctx.deps.service_token) |key| {
+            const expected = std.fmt.allocPrint(ctx.deps.alloc, "Bearer {s}", .{key}) catch return;
+            defer ctx.deps.alloc.free(expected);
+            if (auth_header == null or !std.mem.eql(u8, auth_header.?, expected)) {
+                std.log.warn("Unauthorized service API request to {s}", .{path});
+                writer.print("HTTP/1.1 401 Unauthorized\r\n", .{}) catch return;
+                writer.writeAll("Content-Length: 0\r\n\r\n") catch return;
+                return;
+            }
+        }
+        const service_path = path[13..];
+        if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, service_path, "/incoming")) {
+            handleIncoming(writer, ctx, reader, content_length) catch return;
+            return;
+        }
+        writeNotFound(writer) catch return;
+        return;
+    }
+
+    writeNotFound(writer) catch return;
+}
+
 fn handleConn(ctx: *ConnCtx) void {
     defer {
         ctx.stream.socket.close(ctx.io);
@@ -82,9 +183,7 @@ fn handleConn(ctx: *ConnCtx) void {
     const method = line[0..method_end];
     const path = line[method_end + 1 .. method_end + 1 + path_end];
 
-    // Read headers and extract Content-Length and Authorization
     var content_length: ?usize = null;
-    var auth_header: ?[]const u8 = null;
     while (true) {
         const header = reader.takeDelimiterInclusive('\n') catch return;
         if (header.len <= 2) break;
@@ -93,39 +192,10 @@ fn handleConn(ctx: *ConnCtx) void {
             const value = std.mem.trim(u8, trimmed[15..], " ");
             content_length = std.fmt.parseInt(usize, value, 10) catch null;
         }
-        if (std.mem.startsWith(u8, trimmed, "Authorization:")) {
-            auth_header = std.mem.trim(u8, trimmed[14..], " ");
-        }
     }
 
-    // Route handling with new API structure
-    // /health - Public health check (no auth required)
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/health")) {
         writeJsonResponse(writer, 200, makeHealthBody()) catch return;
-        return;
-    }
-
-    // /api/service/* - Service APIs (require service token)
-    if (std.mem.startsWith(u8, path, "/api/service/")) {
-        // Verify service token
-        if (ctx.deps.service_token) |key| {
-            const expected = std.fmt.allocPrint(ctx.deps.alloc, "Bearer {s}", .{key}) catch return;
-            defer ctx.deps.alloc.free(expected);
-            if (auth_header == null or !std.mem.eql(u8, auth_header.?, expected)) {
-                std.log.warn("Unauthorized service API request to {s}", .{path});
-                writer.print("HTTP/1.1 401 Unauthorized\r\n", .{}) catch return;
-                writer.writeAll("Content-Length: 0\r\n\r\n") catch return;
-                return;
-            }
-        }
-
-        const service_path = path[13..]; // Remove "/api/service"
-        if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, service_path, "/incoming")) {
-            handleIncoming(writer, ctx, reader, content_length) catch return;
-            return;
-        }
-
-        writeNotFound(writer) catch return;
         return;
     }
 

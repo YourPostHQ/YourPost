@@ -54,9 +54,19 @@ pub fn main(init: std.process.Init) !void {
         .hostname = cfg.hostname,
         .data_dir = cfg.data_dir,
         .api_port = cfg.api_port,
+        .service_port = cfg.service_port,
         .service_token = cfg.service_token,
         .io = init.io,
     };
+
+    std.log.info("yourpost starting on SMTP :{d}/{d}, POP3 :{d}, IMAP :{d}, API :{d}, Service API :{d}", .{
+        cfg.smtp_port,
+        cfg.smtp_submission_port,
+        cfg.pop3_port,
+        cfg.imap_port,
+        cfg.api_port,
+        cfg.service_port,
+    });
 
     (std.Thread.spawn(.{}, smtp.listen, .{ init.io, cfg.smtp_port, smtp_deps }) catch |err| {
         std.log.err("Failed to spawn SMTP thread: {}", .{err});
@@ -78,14 +88,10 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("Failed to spawn API thread: {}", .{err});
         return;
     }).detach();
-
-    std.log.info("yourpost started on SMTP :{d}/{d}, POP3 :{d}, IMAP :{d}, API :{d}", .{
-        cfg.smtp_port,
-        cfg.smtp_submission_port,
-        cfg.pop3_port,
-        cfg.imap_port,
-        cfg.api_port,
-    });
+    (std.Thread.spawn(.{}, api.listenService, .{ init.io, api_deps }) catch |err| {
+        std.log.err("Failed to spawn Service API thread: {}", .{err});
+        return;
+    }).detach();
 
     while (true) {
         std.Io.sleep(init.io, std.Io.Duration.fromSeconds(1), .awake) catch {};
