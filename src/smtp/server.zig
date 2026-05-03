@@ -37,7 +37,7 @@ pub fn listen(io: std.Io, port: u16, deps: Deps, shutdown_flag: ?*std.atomic.Val
                 return;
             }
         }
-        
+
         // Check connection limit
         const current = connection_count.load(.seq_cst);
         if (current >= deps.max_connections) {
@@ -58,7 +58,7 @@ pub fn listen(io: std.Io, port: u16, deps: Deps, shutdown_flag: ?*std.atomic.Val
             stream.socket.close(io);
             continue;
         }
-        
+
         const stream = server.accept(io) catch |err| {
             // Check if this is a shutdown-related error
             if (shutdown_flag) |flag| {
@@ -67,10 +67,10 @@ pub fn listen(io: std.Io, port: u16, deps: Deps, shutdown_flag: ?*std.atomic.Val
             std.log.warn("SMTP accept error: {}", .{err});
             continue;
         };
-        
+
         // Increment connection count
         _ = connection_count.fetchAdd(1, .seq_cst);
-        
+
         const ctx = deps.alloc.create(ConnCtx) catch |err| {
             std.log.warn("SMTP alloc error: {}", .{err});
             stream.socket.close(io);

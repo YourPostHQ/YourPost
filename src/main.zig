@@ -65,13 +65,13 @@ fn printUsage() void {
 
 pub fn main(init: std.process.Init) !void {
     const alloc = std.heap.page_allocator;
-    
+
     // Parse command-line arguments
     const args = parseArgs(alloc, init.minimal.args) catch {
         std.process.exit(1);
         return;
     };
-    
+
     const cfg = try config.Config.fromEnv(alloc);
 
     // Install signal handlers for graceful shutdown
@@ -85,17 +85,17 @@ pub fn main(init: std.process.Init) !void {
     std.posix.sigaction(std.posix.SIG.QUIT, &sa, null);
 
     const cwd = std.Io.Dir.cwd();
-    
+
     // Startup validation
     std.log.info("Validating startup configuration...", .{});
-    
+
     // Check if data_dir is writable
     _ = try std.Io.Dir.createDirPathStatus(cwd, init.io, cfg.data_dir, .default_dir);
     cwd.access(init.io, cfg.data_dir, .{ .read = true, .write = true }) catch |err| {
         std.log.err("Data directory '{s}' is not accessible: {}", .{ cfg.data_dir, err });
         return;
     };
-    
+
     const mailbox_dir = try std.fmt.allocPrint(alloc, "{s}/mailboxes", .{cfg.data_dir});
     defer alloc.free(mailbox_dir);
     _ = try std.Io.Dir.createDirPathStatus(cwd, init.io, mailbox_dir, .default_dir);
@@ -106,7 +106,7 @@ pub fn main(init: std.process.Init) !void {
     defer alloc.free(global_db_path);
     var global_db = try GlobalDb.open(alloc, init.io, global_db_path);
     defer global_db.close();
-    
+
     std.log.info("Startup validation complete.", .{});
 
     const smtp_deps = smtp.Deps{
@@ -247,17 +247,17 @@ pub fn main(init: std.process.Init) !void {
 
     // Graceful shutdown sequence
     std.log.info("Shutting down yourpost...", .{});
-    
+
     // Give active connections time to finish (with timeout)
     var shutdown_timeout: i32 = 30; // 30 second timeout
     while (shutdown_timeout > 0) {
         std.Io.sleep(init.io, std.Io.Duration.fromSeconds(1), .awake) catch {};
         shutdown_timeout -= 1;
     }
-    
+
     std.log.info("Closing global database...", .{});
     global_db.close();
-    
+
     std.log.info("yourpost shutdown complete.", .{});
 }
 

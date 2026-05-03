@@ -49,7 +49,7 @@ pub fn listen(io: std.Io, deps: Deps, shutdown_flag: ?*std.atomic.Value(bool)) v
                 return;
             }
         }
-        
+
         const stream = server.accept(io) catch |err| {
             // Check if this is a shutdown-related error
             if (shutdown_flag) |flag| {
@@ -99,7 +99,7 @@ pub fn listenService(io: std.Io, deps: Deps, shutdown_flag: ?*std.atomic.Value(b
                 return;
             }
         }
-        
+
         const stream = server.accept(io) catch |err| {
             // Check if this is a shutdown-related error
             if (shutdown_flag) |flag| {

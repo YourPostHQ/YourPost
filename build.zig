@@ -32,7 +32,7 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
     b.step("run", "Run yourpost").dependOn(&run_cmd.step);
-    
+
     // Add test step
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
