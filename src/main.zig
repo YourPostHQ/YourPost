@@ -1,6 +1,6 @@
 const std = @import("std");
 const config = @import("config.zig");
-const GlobalDb = @import("storage/global_db.zig").GlobalDb;
+const GlobalDb = @import("db/global.zig").GlobalDb;
 const smtp = @import("smtp/server.zig");
 const pop3 = @import("pop3/server.zig");
 const imap = @import("imap/server.zig");
@@ -56,7 +56,6 @@ pub fn main(init: std.process.Init) !void {
         .api_port = cfg.api_port,
         .service_token = cfg.service_token,
         .io = init.io,
-        .web_root = envOrNull(alloc, "YP_WEB_ROOT"),
     };
 
     (std.Thread.spawn(.{}, smtp.listen, .{ init.io, cfg.smtp_port, smtp_deps }) catch |err| {

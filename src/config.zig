@@ -51,7 +51,7 @@ fn envOr(alloc: std.mem.Allocator, key: []const u8, default: []const u8) []const
     return alloc.dupe(u8, span) catch default;
 }
 
-fn envOrNull(alloc: std.mem.Allocator, key: []const u8) ?[]const u8 {
+pub fn envOrNull(alloc: std.mem.Allocator, key: []const u8) ?[]const u8 {
     const raw = c.getenv(key.ptr) orelse return null;
     const span = std.mem.span(raw);
     if (span.len == 0) return null;

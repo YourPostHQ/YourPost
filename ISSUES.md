@@ -65,7 +65,7 @@ The fix removes the `@` extraction logic and now uses the full email address as 
 - `src/smtp/session.zig` - SMTP delivery (correct implementation reference)
 - `src/imap/session.zig` - IMAP auth (correct implementation reference)
 - `src/pop3/session.zig` - POP3 auth (correct implementation reference)
-- `src/storage/global_db.zig` - User storage (uses full email as unique key ✓)
+- `src/db/global.zig` - User storage (uses full email as unique key ✓)
 
 ---
 

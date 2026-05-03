@@ -6,8 +6,8 @@ const c = @cImport({
     @cInclude("netdb.h");
     @cInclude("netinet/in.h");
 });
-const UserDb = @import("../storage/user_db.zig").UserDb;
-const GlobalDb = @import("../storage/global_db.zig").GlobalDb;
+const UserDb = @import("../db/user.zig").UserDb;
+const GlobalDb = @import("../db/global.zig").GlobalDb;
 
 const State = enum { greeting, ehlo, auth, mail_from, rcpt_to, data, done };
 
@@ -157,7 +157,7 @@ pub fn run(
                 try writer.flush();
                 continue;
             };
-            try recipients.append(a, try a.dupe(u8, addr));
+            try recipients.append(alloc, try a.dupe(u8, addr));
             try writer.writeAll("250 OK\r\n");
             try writer.flush();
             state = .rcpt_to;
@@ -408,8 +408,14 @@ fn smtpExchange(
         };
         const t = std.mem.trimEnd(u8, line, "\r\n");
         std.log.info("EHLO: {s}", .{t});
-        if (t.len < 4) { ehlo_ok = true; break; }
-        if (t[3] == ' ') { ehlo_ok = true; break; }
+        if (t.len < 4) {
+            ehlo_ok = true;
+            break;
+        }
+        if (t[3] == ' ') {
+            ehlo_ok = true;
+            break;
+        }
         if (t[3] != '-') break;
     }
     if (!ehlo_ok) return error.EhloFailed;

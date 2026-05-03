@@ -1,6 +1,6 @@
 const std = @import("std");
-const UserDb = @import("../storage/user_db.zig").UserDb;
-const GlobalDb = @import("../storage/global_db.zig").GlobalDb;
+const UserDb = @import("../db/user.zig").UserDb;
+const GlobalDb = @import("../db/global.zig").GlobalDb;
 
 const State = enum { authorization, transaction, update };
 
@@ -58,8 +58,7 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                         try writer.flush();
                         continue;
                     }
-                    const db_path_str = try std.fmt.allocPrint(alloc, "{s}/mailboxes/{s}.db",
-                        .{ deps.data_dir, username });
+                    const db_path_str = try std.fmt.allocPrint(alloc, "{s}/mailboxes/{s}.db", .{ deps.data_dir, username });
                     defer alloc.free(db_path_str);
                     const db_path = try alloc.dupeZ(u8, db_path_str);
                     defer alloc.free(db_path);
