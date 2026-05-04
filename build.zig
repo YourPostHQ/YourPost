@@ -19,8 +19,12 @@ pub fn build(b: *std.Build) void {
         root_mod.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
     }
 
-    // Linux: use dynamic linking (ZIG_SYSTEM_LIBRARY_PATH set in CI)
+    // Linux: add system library paths explicitly (Zig doesn't search them by default)
     if (target.result.os.tag == .linux) {
+        root_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
+        root_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+        root_mod.addIncludePath(.{ .cwd_relative = "/usr/include/x86_64-linux-gnu" });
+        root_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
         root_mod.linkSystemLibrary("sqlite3", .{});
         root_mod.linkSystemLibrary("ssl", .{});
         root_mod.linkSystemLibrary("crypto", .{});
