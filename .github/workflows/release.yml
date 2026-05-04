@@ -59,6 +59,8 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install sqlite openssl
+          echo "SQLITE3_DIR=$(brew --prefix sqlite)" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=$(brew --prefix openssl)" >> $GITHUB_ENV
 
       - name: Install dependencies (Windows)
         if: runner.os == 'Windows'
@@ -68,6 +70,10 @@ jobs:
       - name: Build for ${{ matrix.target }}
         shell: bash
         run: |
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            export ZIG_SYSTEM_LINKER_FLAGS="-L$(brew --prefix sqlite)/lib -L$(brew --prefix openssl)/lib"
+            export ZIG_SYSTEM_INCLUDE_FLAGS="-I$(brew --prefix sqlite)/include -I$(brew --prefix openssl)/include"
+          fi
           zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
           if [[ "${{ matrix.zig_target }}" == *"windows"* ]]; then
             mv zig-out/bin/yourpost.exe yourpost-${{ matrix.target }}.exe

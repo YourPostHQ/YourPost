@@ -10,6 +10,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+
+    // Add library search paths for macOS with Homebrew
+    if (target.result.os.tag == .macos) {
+        root_mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+        root_mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+        // Also check Intel Macs
+        root_mod.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
+        root_mod.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
+    }
+
     root_mod.linkSystemLibrary("sqlite3", .{});
     root_mod.linkSystemLibrary("ssl", .{});
     root_mod.linkSystemLibrary("crypto", .{});
@@ -40,6 +50,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+
+    // Add library search paths for macOS with Homebrew (for tests too)
+    if (target.result.os.tag == .macos) {
+        test_mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+        test_mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+        // Also check Intel Macs
+        test_mod.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
+        test_mod.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
+    }
+
     test_mod.linkSystemLibrary("sqlite3", .{});
     test_mod.linkSystemLibrary("ssl", .{});
     test_mod.linkSystemLibrary("crypto", .{});
