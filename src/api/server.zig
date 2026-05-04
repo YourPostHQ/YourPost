@@ -363,17 +363,14 @@ fn handleConn(ctx: *ConnCtx) void {
         return;
     }
 
-    // /api/v1/* - Standard User APIs
+    // ── Public: POST /api/v1/auth ─────────────────────────────────────────────
+    if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/api/v1/auth")) {
+        handleAuth(writer, ctx, reader, content_length) catch return;
+        return;
+    }
+
+    // All other /api/v1/* require a valid JWT — extract and verify once.
     if (std.mem.startsWith(u8, path, "/api/v1/")) {
-        const api_path = path[7..]; // keep leading slash, e.g. "/users"
-
-        // /api/v1/auth is public (no token required)
-        if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, api_path, "/auth")) {
-            handleAuth(writer, ctx, reader, content_length) catch return;
-            return;
-        }
-
-        // All other /api/v1/* require a valid JWT
         const bearer_prefix = "Bearer ";
         const raw_token = if (auth_header) |ah| blk: {
             if (!std.mem.startsWith(u8, ah, bearer_prefix)) break :blk null;
@@ -396,123 +393,116 @@ fn handleConn(ctx: *ConnCtx) void {
         }
         const is_admin = std.mem.eql(u8, c_claims.role, "admin");
 
-        if (std.mem.eql(u8, method, "GET")) {
-            if (std.mem.eql(u8, api_path, "/users")) {
-                if (!is_admin) {
-                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
-                    return;
-                }
+        // ── Admin layer: /api/v1/admin/* ─────────────────────────────────────
+        if (std.mem.startsWith(u8, path, "/api/v1/admin/")) {
+            if (!is_admin) {
+                writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                return;
+            }
+            // path[14..] strips "/api/v1/admin" keeping the leading slash → "/users", "/users/{email}"
+            const admin_path = path[13..];
+
+            if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, admin_path, "/users")) {
                 handleListUsers(writer, ctx) catch return;
                 return;
             }
-            // GET /api/v1/mailboxes/{user}/folders
-            if (std.mem.startsWith(u8, api_path, "/mailboxes/") and endsWith(api_path, "/folders")) {
-                const user = api_path[12 .. api_path.len - 8];
-                if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
-                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
-                    return;
-                }
-                writeUserFolders(writer, ctx, user) catch return;
-                return;
-            }
-            // GET /api/v1/mailboxes/{user}/messages?folder=INBOX
-            if (std.mem.startsWith(u8, api_path, "/mailboxes/") and std.mem.indexOf(u8, api_path, "/messages") != null) {
-                const user_start = 12;
-                const user_end = std.mem.indexOf(u8, api_path, "/messages") orelse return;
-                const user = api_path[user_start..user_end];
-                if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
-                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
-                    return;
-                }
-                const folder = if (std.mem.indexOf(u8, path, "folder=")) |pos| blk: {
-                    const start = pos + 7;
-                    const end = if (std.mem.indexOfPos(u8, path, start, "&")) |e| e else path.len;
-                    break :blk path[start..end];
-                } else "INBOX";
-                handleListMessages(writer, ctx, user, folder) catch return;
-                return;
-            }
-            // GET /api/v1/mailboxes/{user}/messages/{id}
-            if (std.mem.startsWith(u8, api_path, "/mailboxes/")) {
-                const pattern = "/messages/";
-                if (std.mem.indexOf(u8, api_path, pattern)) |msg_pos| {
-                    const user_start = 12;
-                    const user_end = msg_pos;
-                    const user = api_path[user_start..user_end];
-                    if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
-                        writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
-                        return;
-                    }
-                    const id_start = msg_pos + pattern.len;
-                    const id_str = api_path[id_start..];
-                    const msg_id = std.fmt.parseInt(u32, id_str, 10) catch {
-                        writeNotFound(writer) catch return;
-                        return;
-                    };
-                    handleGetMessage(writer, ctx, user, msg_id) catch return;
-                    return;
-                }
-            }
-        }
-
-        if (std.mem.eql(u8, method, "POST")) {
-            if (std.mem.eql(u8, api_path, "/users")) {
-                if (!is_admin) {
-                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
-                    return;
-                }
+            if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, admin_path, "/users")) {
                 handleCreateUser(writer, ctx, reader, content_length) catch return;
                 return;
             }
-            // POST /api/v1/mailboxes/{user}/send
-            if (std.mem.startsWith(u8, api_path, "/mailboxes/") and std.mem.endsWith(u8, api_path, "/send")) {
-                const user = api_path[12 .. api_path.len - 5];
-                if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
-                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
-                    return;
-                }
-                handleSendMessage(writer, ctx, reader, content_length, user) catch return;
-                return;
-            }
-        }
-
-        if (std.mem.eql(u8, method, "PUT")) {
-            if (std.mem.startsWith(u8, api_path, "/users/")) {
-                if (!is_admin) {
-                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
-                    return;
-                }
-                const email = api_path[7..];
+            if (std.mem.eql(u8, method, "PUT") and std.mem.startsWith(u8, admin_path, "/users/")) {
+                const email = admin_path[7..];
                 handleUpdateUser(writer, ctx, reader, content_length, email) catch return;
                 return;
             }
-        }
-
-        if (std.mem.eql(u8, method, "DELETE")) {
-            if (std.mem.startsWith(u8, api_path, "/users/")) {
-                if (!is_admin) {
-                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
-                    return;
-                }
-                const email = api_path[7..];
+            if (std.mem.eql(u8, method, "DELETE") and std.mem.startsWith(u8, admin_path, "/users/")) {
+                const email = admin_path[7..];
                 handleDeactivateUser(writer, ctx, email) catch return;
                 return;
             }
-            // DELETE /api/v1/mailboxes/{user}/messages/{id}
-            if (std.mem.startsWith(u8, api_path, "/mailboxes/")) {
-                const pattern = "/messages/";
-                if (std.mem.indexOf(u8, api_path, pattern)) |msg_pos| {
-                    const user_start = 12;
-                    const user_end = msg_pos;
-                    const user = api_path[user_start..user_end];
+            writeNotFound(writer) catch return;
+            return;
+        }
+
+        // ── User layer: /api/v1/mailboxes/{user}/* ────────────────────────────
+        if (std.mem.startsWith(u8, path, "/api/v1/mailboxes/")) {
+            // api_path strips "/api/v1" keeping leading slash → "/mailboxes/..."
+            const api_path = path[7..];
+
+            if (std.mem.eql(u8, method, "GET")) {
+                // GET /api/v1/mailboxes/{user}/folders
+                if (std.mem.startsWith(u8, api_path, "/mailboxes/") and endsWith(api_path, "/folders")) {
+                    const user = api_path[12 .. api_path.len - 8];
                     if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
                         writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
                         return;
                     }
-                    const id_start = msg_pos + pattern.len;
-                    const id_str = api_path[id_start..];
-                    handleDeleteMessage(writer, ctx, user, id_str) catch return;
+                    writeUserFolders(writer, ctx, user) catch return;
                     return;
+                }
+                // GET /api/v1/mailboxes/{user}/messages/{id}  (must precede list check)
+                if (std.mem.startsWith(u8, api_path, "/mailboxes/")) {
+                    const pattern = "/messages/";
+                    if (std.mem.indexOf(u8, api_path, pattern)) |msg_pos| {
+                        const user = api_path[12..msg_pos];
+                        if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                            writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                            return;
+                        }
+                        const id_str = api_path[msg_pos + pattern.len ..];
+                        const msg_id = std.fmt.parseInt(u32, id_str, 10) catch {
+                            writeNotFound(writer) catch return;
+                            return;
+                        };
+                        handleGetMessage(writer, ctx, user, msg_id) catch return;
+                        return;
+                    }
+                }
+                // GET /api/v1/mailboxes/{user}/messages?folder=...
+                if (std.mem.startsWith(u8, api_path, "/mailboxes/") and std.mem.indexOf(u8, api_path, "/messages") != null) {
+                    const user_end = std.mem.indexOf(u8, api_path, "/messages") orelse return;
+                    const user = api_path[12..user_end];
+                    if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                        writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                        return;
+                    }
+                    const folder = if (std.mem.indexOf(u8, path, "folder=")) |pos| blk: {
+                        const start = pos + 7;
+                        const end = if (std.mem.indexOfPos(u8, path, start, "&")) |e| e else path.len;
+                        break :blk path[start..end];
+                    } else "INBOX";
+                    handleListMessages(writer, ctx, user, folder) catch return;
+                    return;
+                }
+            }
+
+            if (std.mem.eql(u8, method, "POST")) {
+                // POST /api/v1/mailboxes/{user}/send
+                if (std.mem.startsWith(u8, api_path, "/mailboxes/") and std.mem.endsWith(u8, api_path, "/send")) {
+                    const user = api_path[12 .. api_path.len - 5];
+                    if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                        writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                        return;
+                    }
+                    handleSendMessage(writer, ctx, reader, content_length, user) catch return;
+                    return;
+                }
+            }
+
+            if (std.mem.eql(u8, method, "DELETE")) {
+                // DELETE /api/v1/mailboxes/{user}/messages/{id}
+                if (std.mem.startsWith(u8, api_path, "/mailboxes/")) {
+                    const pattern = "/messages/";
+                    if (std.mem.indexOf(u8, api_path, pattern)) |msg_pos| {
+                        const user = api_path[12..msg_pos];
+                        if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                            writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                            return;
+                        }
+                        const id_str = api_path[msg_pos + pattern.len ..];
+                        handleDeleteMessage(writer, ctx, user, id_str) catch return;
+                        return;
+                    }
                 }
             }
         }
