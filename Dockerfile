@@ -1,13 +1,13 @@
 FROM alpine:latest
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata wget
 
 # Install Zig (using specific version)
 ARG ZIG_VERSION=0.16.0
-RUN wget -q https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz \
-    && tar -xf zig-linux-x86_64-${ZIG_VERSION}.tar.xz \
-    && mv zig-linux-x86_64-${ZIG_VERSION} /usr/local/zig \
-    && rm zig-linux-x86_64-${ZIG_VERSION}.tar.xz \
+RUN wget -q https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz \
+    && tar -xf zig-x86_64-linux-${ZIG_VERSION}.tar.xz \
+    && mv zig-x86_64-linux-${ZIG_VERSION} /usr/local/zig \
+    && rm zig-x86_64-linux-${ZIG_VERSION}.tar.xz \
     && ln -s /usr/local/zig/zig /usr/local/bin/zig
 
 # Install build dependencies
