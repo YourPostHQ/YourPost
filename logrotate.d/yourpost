@@ -1,0 +1,13 @@
+/var/log/yourpost/*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 yourpost yourpost
+    sharedscripts
+    postrotate
+        systemctl reload yourpost > /dev/null 2>&1 || true
+    endscript
+}

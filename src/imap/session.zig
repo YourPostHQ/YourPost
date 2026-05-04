@@ -1,9 +1,9 @@
 const std = @import("std");
 const c = @cImport(@cInclude("time.h"));
 const parser = @import("parser.zig");
-const UserDb = @import("../storage/user_db.zig").UserDb;
-const Flags = @import("../storage/user_db.zig").Flags;
-const GlobalDb = @import("../storage/global_db.zig").GlobalDb;
+const UserDb = @import("../db/user.zig").UserDb;
+const Flags = @import("../db/user.zig").Flags;
+const GlobalDb = @import("../db/global.zig").GlobalDb;
 
 const State = enum { not_authenticated, authenticated, selected, selected_readonly, logout };
 
@@ -12,6 +12,16 @@ pub const Deps = struct {
     alloc: std.mem.Allocator,
     hostname: []const u8,
     data_dir: []const u8,
+
+    // TLS configuration for STARTTLS and implicit TLS
+    use_tls: bool = false,
+    tls_cert: ?[]const u8 = null,
+    tls_key: ?[]const u8 = null,
+
+    // Connection limits and timeouts
+    max_connections: usize = 1000,
+    connection_timeout_ms: u32 = 300000, // 5 minutes
+    read_timeout_ms: u32 = 300000, // 5 minutes
 };
 
 pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
@@ -82,8 +92,7 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                     continue;
                 }
                 username = try alloc.dupe(u8, l.user);
-                const db_path_str = try std.fmt.allocPrint(alloc, "{s}/mailboxes/{s}.db",
-                    .{ deps.data_dir, username });
+                const db_path_str = try std.fmt.allocPrint(alloc, "{s}/mailboxes/{s}.db", .{ deps.data_dir, username });
                 defer alloc.free(db_path_str);
                 const db_path = try alloc.dupeZ(u8, db_path_str);
                 defer alloc.free(db_path);
@@ -97,45 +106,61 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 try writer.flush();
             },
             .select => |name| {
-                try doSelect(writer, tag, name, &udb_opt, &state, &selected_name,
-                    &selected_folder_id, &selected_uid_validity, alloc, false);
+                try doSelect(writer, tag, name, &udb_opt, &state, &selected_name, &selected_folder_id, &selected_uid_validity, alloc, false);
             },
             .examine => |name| {
-                try doSelect(writer, tag, name, &udb_opt, &state, &selected_name,
-                    &selected_folder_id, &selected_uid_validity, alloc, true);
+                try doSelect(writer, tag, name, &udb_opt, &state, &selected_name, &selected_folder_id, &selected_uid_validity, alloc, true);
             },
             .create => |name| {
-                if (state == .not_authenticated) { try noAuth(writer, tag); continue; }
+                if (state == .not_authenticated) {
+                    try noAuth(writer, tag);
+                    continue;
+                }
                 udb_opt.?.createFolder(name) catch {};
                 try writer.print("{s} OK CREATE done\r\n", .{tag});
                 try writer.flush();
             },
             .delete => |name| {
-                if (state == .not_authenticated) { try noAuth(writer, tag); continue; }
+                if (state == .not_authenticated) {
+                    try noAuth(writer, tag);
+                    continue;
+                }
                 udb_opt.?.deleteFolder(name) catch {};
                 try writer.print("{s} OK DELETE done\r\n", .{tag});
                 try writer.flush();
             },
             .rename => |r| {
-                if (state == .not_authenticated) { try noAuth(writer, tag); continue; }
+                if (state == .not_authenticated) {
+                    try noAuth(writer, tag);
+                    continue;
+                }
                 udb_opt.?.renameFolder(r.old, r.new) catch {};
                 try writer.print("{s} OK RENAME done\r\n", .{tag});
                 try writer.flush();
             },
             .subscribe => |name| {
                 _ = name;
-                if (state == .not_authenticated) { try noAuth(writer, tag); continue; }
+                if (state == .not_authenticated) {
+                    try noAuth(writer, tag);
+                    continue;
+                }
                 try writer.print("{s} OK SUBSCRIBE done\r\n", .{tag});
                 try writer.flush();
             },
             .unsubscribe => |name| {
                 _ = name;
-                if (state == .not_authenticated) { try noAuth(writer, tag); continue; }
+                if (state == .not_authenticated) {
+                    try noAuth(writer, tag);
+                    continue;
+                }
                 try writer.print("{s} OK UNSUBSCRIBE done\r\n", .{tag});
                 try writer.flush();
             },
             .list => |l| {
-                if (state == .not_authenticated) { try noAuth(writer, tag); continue; }
+                if (state == .not_authenticated) {
+                    try noAuth(writer, tag);
+                    continue;
+                }
                 const folders = try udb_opt.?.listFolders();
                 for (folders) |f| {
                     if (matchPattern(f.name, l.pattern)) {
@@ -147,7 +172,10 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 try writer.flush();
             },
             .lsub => |l| {
-                if (state == .not_authenticated) { try noAuth(writer, tag); continue; }
+                if (state == .not_authenticated) {
+                    try noAuth(writer, tag);
+                    continue;
+                }
                 const folders = try udb_opt.?.listFolders();
                 for (folders) |f| {
                     if (f.subscribed and matchPattern(f.name, l.pattern)) {
@@ -158,7 +186,10 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 try writer.flush();
             },
             .status => |s| {
-                if (state == .not_authenticated) { try noAuth(writer, tag); continue; }
+                if (state == .not_authenticated) {
+                    try noAuth(writer, tag);
+                    continue;
+                }
                 const udb = &udb_opt.?;
                 const folder = (try udb.getFolderByName(s.mailbox)) orelse {
                     try writer.print("{s} NO No such mailbox\r\n", .{tag});
@@ -184,7 +215,10 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 try writer.flush();
             },
             .append => |ap| {
-                if (state == .not_authenticated) { try noAuth(writer, tag); continue; }
+                if (state == .not_authenticated) {
+                    try noAuth(writer, tag);
+                    continue;
+                }
                 const udb = &udb_opt.?;
                 const folder = (try udb.getFolderByName(ap.mailbox)) orelse {
                     try writer.print("{s} NO [TRYCREATE] No such mailbox\r\n", .{tag});
@@ -216,12 +250,18 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 try writer.flush();
             },
             .check => {
-                if (state != .selected and state != .selected_readonly) { try notSelected(writer, tag); continue; }
+                if (state != .selected and state != .selected_readonly) {
+                    try notSelected(writer, tag);
+                    continue;
+                }
                 try writer.print("{s} OK CHECK done\r\n", .{tag});
                 try writer.flush();
             },
             .close => {
-                if (state != .selected and state != .selected_readonly) { try notSelected(writer, tag); continue; }
+                if (state != .selected and state != .selected_readonly) {
+                    try notSelected(writer, tag);
+                    continue;
+                }
                 if (state == .selected) {
                     _ = udb_opt.?.expunge(selected_folder_id) catch &.{};
                 }
@@ -231,7 +271,10 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 try writer.flush();
             },
             .expunge => {
-                if (state != .selected) { try notSelected(writer, tag); continue; }
+                if (state != .selected) {
+                    try notSelected(writer, tag);
+                    continue;
+                }
                 const udb = &udb_opt.?;
                 // Snapshot all UIDs (including \Deleted) before expunge to map to seq numbers
                 const all_uids = try udb.listMessageUids(selected_folder_id);
@@ -254,7 +297,10 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 try writer.flush();
             },
             .search => |s| {
-                if (state != .selected and state != .selected_readonly) { try notSelected(writer, tag); continue; }
+                if (state != .selected and state != .selected_readonly) {
+                    try notSelected(writer, tag);
+                    continue;
+                }
                 const udb = &udb_opt.?;
                 const msgs = try udb.listMessages(selected_folder_id);
                 try writer.writeAll("* SEARCH");
@@ -272,7 +318,10 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 try writer.flush();
             },
             .fetch => |f| {
-                if (state != .selected and state != .selected_readonly) { try notSelected(writer, tag); continue; }
+                if (state != .selected and state != .selected_readonly) {
+                    try notSelected(writer, tag);
+                    continue;
+                }
                 const udb = &udb_opt.?;
                 const msgs = try udb.listMessages(selected_folder_id);
                 for (msgs, 1..) |m, seq| {
@@ -290,7 +339,10 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 try writer.flush();
             },
             .store => |s| {
-                if (state != .selected) { try notSelected(writer, tag); continue; }
+                if (state != .selected) {
+                    try notSelected(writer, tag);
+                    continue;
+                }
                 const udb = &udb_opt.?;
                 const msgs = try udb.listMessages(selected_folder_id);
                 for (msgs, 1..) |m, seq| {
@@ -325,7 +377,10 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 try writer.flush();
             },
             .copy => |cp| {
-                if (state != .selected and state != .selected_readonly) { try notSelected(writer, tag); continue; }
+                if (state != .selected and state != .selected_readonly) {
+                    try notSelected(writer, tag);
+                    continue;
+                }
                 const udb = &udb_opt.?;
                 const dest = (try udb.getFolderByName(cp.mailbox)) orelse {
                     try writer.print("{s} NO [TRYCREATE] No such mailbox\r\n", .{tag});
@@ -342,7 +397,10 @@ pub fn run(reader: anytype, writer: anytype, deps: Deps) !void {
                 try writer.flush();
             },
             .idle => {
-                if (state == .not_authenticated) { try noAuth(writer, tag); continue; }
+                if (state == .not_authenticated) {
+                    try noAuth(writer, tag);
+                    continue;
+                }
                 const in_selected = state == .selected or state == .selected_readonly;
                 var pre_messages: u32 = 0;
                 var pre_recent: u32 = 0;
@@ -392,7 +450,10 @@ fn doSelect(
     alloc: std.mem.Allocator,
     readonly: bool,
 ) !void {
-    if (state.* == .not_authenticated) { try noAuth(writer, tag); return; }
+    if (state.* == .not_authenticated) {
+        try noAuth(writer, tag);
+        return;
+    }
     const udb = &udb_opt.*.?;
     const folder = (try udb.getFolderByName(name)) orelse {
         try writer.print("{s} NO No such mailbox\r\n", .{tag});
@@ -417,7 +478,7 @@ fn doSelect(
     try writer.flush();
 }
 
-fn writeFetchAtt(writer: anytype, att: parser.FetchAtt, m: @import("../storage/user_db.zig").Message, buf: *[8192]u8) !void {
+fn writeFetchAtt(writer: anytype, att: parser.FetchAtt, m: @import("../db/user.zig").Message, buf: *[8192]u8) !void {
     switch (att) {
         .flags => {
             const fstr = m.flags.toImap(buf);
@@ -432,7 +493,7 @@ fn writeFetchAtt(writer: anytype, att: parser.FetchAtt, m: @import("../storage/u
         },
         .rfc822_header => {
             const hdr_end = std.mem.indexOf(u8, m.raw, "\r\n\r\n") orelse m.raw.len;
-            const hdr = m.raw[0..hdr_end + 4];
+            const hdr = m.raw[0 .. hdr_end + 4];
             try writer.print("RFC822.HEADER {{{d}}}\r\n", .{hdr.len});
             try writer.writeAll(hdr);
         },
@@ -569,7 +630,9 @@ fn writeBodystructure(writer: anytype, raw: []const u8, size: u32) !void {
         }
     }
     var lines: u32 = 0;
-    for (raw) |ch| if (ch == '\n') { lines += 1; };
+    for (raw) |ch| if (ch == '\n') {
+        lines += 1;
+    };
     try writer.print("BODYSTRUCTURE (\"{s}\" \"{s}\" (\"CHARSET\" \"{s}\") NIL NIL \"7BIT\" {d} {d})", .{
         media_type, media_subtype, charset, size, lines,
     });
@@ -577,8 +640,14 @@ fn writeBodystructure(writer: anytype, raw: []const u8, size: u32) !void {
 
 fn seqSetContains(seqset: []const parser.SeqRange, n: u32) bool {
     for (seqset) |r| {
-        const from = switch (r.from) { .num => |v| v, .star => std.math.maxInt(u32) };
-        const to = if (r.to) |t| switch (t) { .num => |v| v, .star => std.math.maxInt(u32) } else from;
+        const from = switch (r.from) {
+            .num => |v| v,
+            .star => std.math.maxInt(u32),
+        };
+        const to = if (r.to) |t| switch (t) {
+            .num => |v| v,
+            .star => std.math.maxInt(u32),
+        } else from;
         const lo = @min(from, to);
         const hi = @max(from, to);
         if (n >= lo and n <= hi) return true;
@@ -587,7 +656,7 @@ fn seqSetContains(seqset: []const parser.SeqRange, n: u32) bool {
 }
 
 fn matchSearch(
-    m: @import("../storage/user_db.zig").Message,
+    m: @import("../db/user.zig").Message,
     seq: usize,
     keys: []const parser.SearchKey,
 ) bool {
@@ -598,7 +667,7 @@ fn matchSearch(
     return true;
 }
 
-fn searchKeyMatches(m: @import("../storage/user_db.zig").Message, key: parser.SearchKey) bool {
+fn searchKeyMatches(m: @import("../db/user.zig").Message, key: parser.SearchKey) bool {
     return switch (key) {
         .all => true,
         .answered => m.flags.answered,

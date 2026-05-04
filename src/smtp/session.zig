@@ -6,8 +6,8 @@ const c = @cImport({
     @cInclude("netdb.h");
     @cInclude("netinet/in.h");
 });
-const UserDb = @import("../storage/user_db.zig").UserDb;
-const GlobalDb = @import("../storage/global_db.zig").GlobalDb;
+const UserDb = @import("../db/user.zig").UserDb;
+const GlobalDb = @import("../db/global.zig").GlobalDb;
 
 const State = enum { greeting, ehlo, auth, mail_from, rcpt_to, data, done };
 
@@ -28,6 +28,16 @@ pub const Deps = struct {
     relay_user: ?[]const u8,
     relay_password: ?[]const u8,
     relay_use_tls: bool,
+
+    // TLS configuration for STARTTLS and implicit TLS
+    use_tls: bool = false,
+    tls_cert: ?[]const u8 = null,
+    tls_key: ?[]const u8 = null,
+
+    // Connection limits and timeouts
+    max_connections: usize = 1000,
+    connection_timeout_ms: u32 = 300000, // 5 minutes
+    read_timeout_ms: u32 = 300000, // 5 minutes
 };
 
 pub fn run(
@@ -157,7 +167,7 @@ pub fn run(
                 try writer.flush();
                 continue;
             };
-            try recipients.append(a, try a.dupe(u8, addr));
+            try recipients.append(alloc, try a.dupe(u8, addr));
             try writer.writeAll("250 OK\r\n");
             try writer.flush();
             state = .rcpt_to;
@@ -181,6 +191,7 @@ pub fn run(
             try writer.writeAll("250 OK\r\n");
             try writer.flush();
         } else if (std.mem.eql(u8, verb, "STARTTLS")) {
+            // STARTTLS not yet implemented
             try writer.writeAll("454 TLS not available\r\n");
             try writer.flush();
         } else if (std.mem.eql(u8, verb, "QUIT")) {
@@ -408,8 +419,14 @@ fn smtpExchange(
         };
         const t = std.mem.trimEnd(u8, line, "\r\n");
         std.log.info("EHLO: {s}", .{t});
-        if (t.len < 4) { ehlo_ok = true; break; }
-        if (t[3] == ' ') { ehlo_ok = true; break; }
+        if (t.len < 4) {
+            ehlo_ok = true;
+            break;
+        }
+        if (t[3] == ' ') {
+            ehlo_ok = true;
+            break;
+        }
         if (t[3] != '-') break;
     }
     if (!ehlo_ok) return error.EhloFailed;

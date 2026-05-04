@@ -26,7 +26,7 @@ cd cloudflare-worker
 
 # Set your YourPost server URL
 npx wrangler secret put YOURPOST_URL
-# Enter: https://yourpost.yourdomain.com
+# Enter: http://yourpost.yourdomain.com
 
 # Set the API key (must match YP_SERVICE_TOKEN on your server)
 npx wrangler secret put YOURPOST_SERVICE_TOKEN
@@ -136,7 +136,7 @@ Send an email to an address routed to your worker. Check:
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `YOURPOST_URL` | Yes | YourPost server URL (e.g., https://yourpost.example.com) |
+| `YOURPOST_URL` | Yes | YourPost server URL (e.g., https://yourpost.yourdomain.com) |
 | `YOURPOST_SERVICE_TOKEN` | Recommended | API key for authentication (must match server's `YP_SERVICE_TOKEN`) |
 
 ### wrangler.toml Variables

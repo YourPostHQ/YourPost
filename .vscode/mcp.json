@@ -2,7 +2,26 @@
   "servers": {
     "zig-docs": {
       "command": "npx",
-      "args": ["-y", "zig-mcp@latest", "--doc-source", "remote", "--version", "0.16.0"]
+      "args": [
+        "-y",
+        "zig-mcp@latest",
+        "--doc-source",
+        "remote",
+        "--version",
+        "0.16.0"
+      ]
+    },
+    "youtrack": {
+      "type": "http",
+      "url": "http://172.20.0.135:3000/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:YOUTRACK_AUTH_TOKEN}",
+        "X-YouTrack-Project": "YRP"
+      }
+    },
+    "icons-mcp": {
+      "type": "http",
+      "url": "http://172.20.0.135:3600/mcp"
     }
   }
 }

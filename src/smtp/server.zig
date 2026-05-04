@@ -9,9 +9,11 @@ const ConnCtx = struct {
     deps: Deps,
 };
 
-pub fn listen(io: std.Io, port: u16, deps: Deps) void {
-    // Check for privileged port before attempting to bind (prevents noisy stack trace)
-    if (port < 1024) {
+// Global connection counter (atomic for thread safety)
+var connection_count = std.atomic.Value(usize).init(0);
+
+pub fn listen(io: std.Io, port: u16, deps: Deps, shutdown_flag: ?*std.atomic.Value(bool)) void {
+    if (port < 1024 and std.os.linux.geteuid() != 0) {
         std.log.err("SMTP: Cannot bind to privileged port {d} (ports < 1024 require root). Use port > 1024 or run with sudo.", .{port});
         return;
     }
@@ -28,13 +30,51 @@ pub fn listen(io: std.Io, port: u16, deps: Deps) void {
     std.log.info("SMTP listening on :{d}", .{port});
 
     while (true) {
+        // Check shutdown flag
+        if (shutdown_flag) |flag| {
+            if (flag.load(.seq_cst)) {
+                std.log.info("SMTP: Stopping accept loop (shutdown requested)", .{});
+                return;
+            }
+        }
+
+        // Check connection limit
+        const current = connection_count.load(.seq_cst);
+        if (current >= deps.max_connections) {
+            std.log.warn("SMTP: Connection limit reached ({d}/{d}), rejecting connection", .{ current, deps.max_connections });
+            // Accept and immediately close to send appropriate error
+            const stream = server.accept(io) catch |err| {
+                if (shutdown_flag) |flag| {
+                    if (flag.load(.seq_cst)) return;
+                }
+                std.log.warn("SMTP accept error: {}", .{err});
+                continue;
+            };
+            // Send 421 error and close
+            var reject_buf: [4096]u8 = undefined;
+            var rw = stream.writer(io, &reject_buf);
+            rw.interface.writeAll("421 Too many connections, try again later\r\n") catch {};
+            rw.interface.flush() catch {};
+            stream.socket.close(io);
+            continue;
+        }
+
         const stream = server.accept(io) catch |err| {
+            // Check if this is a shutdown-related error
+            if (shutdown_flag) |flag| {
+                if (flag.load(.seq_cst)) return;
+            }
             std.log.warn("SMTP accept error: {}", .{err});
             continue;
         };
+
+        // Increment connection count
+        _ = connection_count.fetchAdd(1, .seq_cst);
+
         const ctx = deps.alloc.create(ConnCtx) catch |err| {
             std.log.warn("SMTP alloc error: {}", .{err});
             stream.socket.close(io);
+            _ = connection_count.fetchSub(1, .seq_cst);
             continue;
         };
         ctx.* = .{ .stream = stream, .io = io, .deps = deps };
@@ -42,6 +82,7 @@ pub fn listen(io: std.Io, port: u16, deps: Deps) void {
             std.log.warn("SMTP thread spawn: {}", .{err});
             stream.socket.close(io);
             deps.alloc.destroy(ctx);
+            _ = connection_count.fetchSub(1, .seq_cst);
             continue;
         };
         t.detach();
@@ -52,6 +93,8 @@ fn handleConn(ctx: *ConnCtx) void {
     defer {
         ctx.stream.socket.close(ctx.io);
         ctx.deps.alloc.destroy(ctx);
+        // Decrement connection count
+        _ = connection_count.fetchSub(1, .seq_cst);
     }
     var read_buf: [8192]u8 = undefined;
     var write_buf: [4096]u8 = undefined;

@@ -1,15 +1,21 @@
 /**
  * Cloudflare Email Worker for yourpost
- * 
+ *
  * Setup:
  * 1. Create a new Cloudflare Worker
  * 2. Copy this code into the worker
- * 3. Set the YOURPOST_URL secret: wrangler secret put YOURPOST_URL https://yourpost.privatedata.center
- * 4. Set the YOURPOST_SERVICE_TOKEN secret: wrangler secret put YOURPOST_SERVICE_TOKEN your-generated-api-key
+ * 3. Set the YOURPOST_SERVICE_URL secret (service API port):
+ *      wrangler secret put YOURPOST_SERVICE_URL https://yourpost.privatedata.center:9001
+ * 4. Set the YOURPOST_SERVICE_TOKEN secret:
+ *      wrangler secret put YOURPOST_SERVICE_TOKEN your-generated-token
  * 5. Set up Email Routing in Cloudflare Dashboard:
  *    - Go to Email Routing > Catch-all address
  *    - Select "Send to a Worker" and choose this worker
  *    - Or route specific addresses like: marketing@yourdomain.com, notifications@yourdomain.com
+ *
+ * Ports:
+ *   9000 (YP_API_PORT)     — user API  (/api/v1/*)
+ *   9001 (YP_SERVICE_PORT) — service API (/api/service/*) ← this worker targets here
  */
 
 // Export fetch handler (required for Workers)
@@ -23,9 +29,9 @@ export default {
     console.log(`Received email from: ${message.from}, to: ${message.to}, subject: ${message.headers.get('subject')}`);
 
     try {
-      // Forward to yourpost API
-      const yourpostUrl = env.YOURPOST_URL || 'https://yourpost.privatedata.center';
-      const incomingUrl = `${yourpostUrl}/incoming`;
+      // Forward to yourpost service API (port 9001)
+      const serviceUrl = env.YOURPOST_SERVICE_URL || 'http://yourpost.yourdomain.com:9001';
+      const incomingUrl = `${serviceUrl}/api/service/incoming`;
 
       // Construct raw email from message parts
       const rawEmail = await reconstructEmail(message);

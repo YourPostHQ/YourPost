@@ -221,7 +221,8 @@ pub const UserDb = struct {
         _ = c.sqlite3_bind_int64(stmt, 1, folder_id);
         _ = c.sqlite3_bind_int(stmt, 2, @intCast(uid));
         if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return null;
-        return messageFromRow(self.alloc, stmt);
+        const msg = try messageFromRow(self.alloc, stmt);
+        return msg;
     }
 
     pub fn listMessages(self: *UserDb, folder_id: i64) ![]Message {
