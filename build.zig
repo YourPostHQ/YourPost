@@ -19,26 +19,39 @@ pub fn build(b: *std.Build) void {
         root_mod.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
     }
 
-    // For Linux targets, link static libraries directly (bypass Zig's library search)
+    // For Linux targets, explicitly add system library paths so Zig can find them
     if (target.result.os.tag == .linux) {
+        // Use ZIG_SYSTEM_LIBRARY_PATH environment variable for system library search
+        // This is the most reliable way to make Zig search system paths
+        root_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
+        root_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+        root_mod.addIncludePath(.{ .cwd_relative = "/usr/include/x86_64-linux-gnu" });
+        root_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    }
+
+    // For cross-compilation (aarch64, riscv64), use static linking
+    const is_cross_linux = target.result.os.tag == .linux and (target.result.cpu.arch == .aarch64 or target.result.cpu.arch == .riscv64);
+    if (is_cross_linux) {
         const arch = switch (target.result.cpu.arch) {
-            .x86_64 => "x86_64-linux-gnu",
             .aarch64 => "aarch64-linux-gnu",
             .riscv64 => "riscv64-linux-gnu",
             else => "x86_64-linux-gnu",
         };
+        root_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        root_mod.addIncludePath(.{ .cwd_relative = std.fmt.allocPrint(b.allocator, "/usr/include/{s}", .{arch}) catch unreachable });
         const libc_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libc.a", .{arch}) catch unreachable;
         const libsqlite3_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libsqlite3.a", .{arch}) catch unreachable;
         const libssl_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libssl.a", .{arch}) catch unreachable;
         const libcrypto_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libcrypto.a", .{arch}) catch unreachable;
-        const libpthread_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libpthread.a", .{arch}) catch unreachable;
-        const libdl_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libdl.a", .{arch}) catch unreachable;
-        root_mod.addObjectFile(.{ .path = libc_path });
-        root_mod.addObjectFile(.{ .path = libsqlite3_path });
-        root_mod.addObjectFile(.{ .path = libssl_path });
-        root_mod.addObjectFile(.{ .path = libcrypto_path });
-        root_mod.addObjectFile(.{ .path = libpthread_path });
-        root_mod.addObjectFile(.{ .path = libdl_path });
+        root_mod.addObjectFile(.{ .cwd_relative = libc_path });
+        root_mod.addObjectFile(.{ .cwd_relative = libsqlite3_path });
+        root_mod.addObjectFile(.{ .cwd_relative = libssl_path });
+        root_mod.addObjectFile(.{ .cwd_relative = libcrypto_path });
+    } else if (target.result.os.tag == .linux) {
+        // Native Linux - use dynamic linking
+        root_mod.linkSystemLibrary("sqlite3", .{});
+        root_mod.linkSystemLibrary("ssl", .{});
+        root_mod.linkSystemLibrary("crypto", .{});
     } else {
         root_mod.linkSystemLibrary("sqlite3", .{});
         root_mod.linkSystemLibrary("ssl", .{});
@@ -76,25 +89,28 @@ pub fn build(b: *std.Build) void {
         test_mod.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
     }
 
-    if (target.result.os.tag == .linux) {
+    const is_cross_linux_test = target.result.os.tag == .linux and (target.result.cpu.arch == .aarch64 or target.result.cpu.arch == .riscv64);
+    if (is_cross_linux_test) {
         const arch = switch (target.result.cpu.arch) {
-            .x86_64 => "x86_64-linux-gnu",
             .aarch64 => "aarch64-linux-gnu",
             .riscv64 => "riscv64-linux-gnu",
             else => "x86_64-linux-gnu",
         };
+        test_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        test_mod.addIncludePath(.{ .cwd_relative = std.fmt.allocPrint(b.allocator, "/usr/include/{s}", .{arch}) catch unreachable });
         const libc_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libc.a", .{arch}) catch unreachable;
         const libsqlite3_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libsqlite3.a", .{arch}) catch unreachable;
         const libssl_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libssl.a", .{arch}) catch unreachable;
         const libcrypto_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libcrypto.a", .{arch}) catch unreachable;
-        const libpthread_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libpthread.a", .{arch}) catch unreachable;
-        const libdl_path = std.fmt.allocPrint(b.allocator, "/usr/lib/{s}/libdl.a", .{arch}) catch unreachable;
-        test_mod.addObjectFile(.{ .path = libc_path });
-        test_mod.addObjectFile(.{ .path = libsqlite3_path });
-        test_mod.addObjectFile(.{ .path = libssl_path });
-        test_mod.addObjectFile(.{ .path = libcrypto_path });
-        test_mod.addObjectFile(.{ .path = libpthread_path });
-        test_mod.addObjectFile(.{ .path = libdl_path });
+        test_mod.addObjectFile(.{ .cwd_relative = libc_path });
+        test_mod.addObjectFile(.{ .cwd_relative = libsqlite3_path });
+        test_mod.addObjectFile(.{ .cwd_relative = libssl_path });
+        test_mod.addObjectFile(.{ .cwd_relative = libcrypto_path });
+    } else if (target.result.os.tag == .linux) {
+        // Native Linux - use dynamic linking
+        test_mod.linkSystemLibrary("sqlite3", .{});
+        test_mod.linkSystemLibrary("ssl", .{});
+        test_mod.linkSystemLibrary("crypto", .{});
     } else {
         test_mod.linkSystemLibrary("sqlite3", .{});
         test_mod.linkSystemLibrary("ssl", .{});
