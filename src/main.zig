@@ -160,6 +160,7 @@ pub fn main(init: std.process.Init) !void {
         .api_port = cfg.api_port,
         .service_port = cfg.service_port,
         .service_token = cfg.service_token,
+        .jwt_secret = cfg.jwt_secret,
         .io = init.io,
     };
 

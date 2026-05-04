@@ -15,8 +15,134 @@ pub const Deps = struct {
     api_port: u16,
     service_port: u16,
     service_token: ?[]const u8,
+    jwt_secret: []const u8,
     io: std.Io,
 };
+
+const JwtClaims = struct {
+    email: []const u8,
+    role: []const u8,
+};
+
+const base64url = std.base64.Base64Encoder.init(std.base64.url_safe_alphabet_chars, null);
+
+fn base64urlEncode(alloc: std.mem.Allocator, data: []const u8) ![]u8 {
+    const len = std.base64.Base64Encoder.calcSize(data.len);
+    const buf = try alloc.alloc(u8, len);
+    const result = base64url.encode(buf, data);
+    return buf[0..result.len];
+}
+
+fn base64urlDecode(alloc: std.mem.Allocator, encoded: []const u8) ![]u8 {
+    // Add padding if needed
+    const pad = (4 - encoded.len % 4) % 4;
+    const padded = try alloc.alloc(u8, encoded.len + pad);
+    defer alloc.free(padded);
+    @memcpy(padded[0..encoded.len], encoded);
+    for (0..pad) |i| padded[encoded.len + i] = '=';
+    // Replace url-safe chars with standard base64
+    for (padded) |*ch| {
+        if (ch.* == '-') ch.* = '+';
+        if (ch.* == '_') ch.* = '/';
+    }
+    const decoder = std.base64.standard.Decoder;
+    const decoded_len = try decoder.calcSizeForSlice(padded);
+    const decoded = try alloc.alloc(u8, decoded_len);
+    try decoder.decode(decoded, padded);
+    return decoded;
+}
+
+fn signJwt(alloc: std.mem.Allocator, email: []const u8, role: []const u8, secret: []const u8, exp: i64) ![]u8 {
+    const header_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+    const header_enc = try base64urlEncode(alloc, header_json);
+    defer alloc.free(header_enc);
+
+    const payload_json = try std.fmt.allocPrint(alloc,
+        "{{\"email\":\"{s}\",\"role\":\"{s}\",\"exp\":{d}}}", .{ email, role, exp });
+    defer alloc.free(payload_json);
+    const payload_enc = try base64urlEncode(alloc, payload_json);
+    defer alloc.free(payload_enc);
+
+    const signing_input = try std.fmt.allocPrint(alloc, "{s}.{s}", .{ header_enc, payload_enc });
+    defer alloc.free(signing_input);
+
+    var mac: [32]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, signing_input, secret);
+    const sig_enc = try base64urlEncode(alloc, &mac);
+    defer alloc.free(sig_enc);
+
+    return std.fmt.allocPrint(alloc, "{s}.{s}.{s}", .{ header_enc, payload_enc, sig_enc });
+}
+
+fn verifyJwt(alloc: std.mem.Allocator, token: []const u8, secret: []const u8) !JwtClaims {
+    // Split token into 3 parts
+    var parts: [3][]const u8 = undefined;
+    var count: usize = 0;
+    var start: usize = 0;
+    for (token, 0..) |ch, i| {
+        if (ch == '.') {
+            if (count >= 2) return error.InvalidToken;
+            parts[count] = token[start..i];
+            count += 1;
+            start = i + 1;
+        }
+    }
+    if (count != 2) return error.InvalidToken;
+    parts[2] = token[start..];
+
+    // Verify signature
+    const signing_input = token[0 .. parts[0].len + 1 + parts[1].len];
+    var mac: [32]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, signing_input, secret);
+    const expected_sig = try base64urlEncode(alloc, &mac);
+    defer alloc.free(expected_sig);
+    if (!std.mem.eql(u8, expected_sig, parts[2])) return error.InvalidSignature;
+
+    // Decode payload
+    const payload_json = try base64urlDecode(alloc, parts[1]);
+    defer alloc.free(payload_json);
+
+    // Parse email and role from payload JSON (simple extraction, no full JSON parser needed)
+    const email = extractJsonString(alloc, payload_json, "email") orelse return error.MissingClaims;
+    errdefer alloc.free(email);
+    const role = extractJsonString(alloc, payload_json, "role") orelse {
+        alloc.free(email);
+        return error.MissingClaims;
+    };
+
+    // Check expiry
+    if (extractJsonInt(payload_json, "exp")) |exp| {
+        const now = std.time.timestamp();
+        if (now > exp) {
+            alloc.free(email);
+            alloc.free(role);
+            return error.TokenExpired;
+        }
+    }
+
+    return .{ .email = email, .role = role };
+}
+
+fn extractJsonString(alloc: std.mem.Allocator, json: []const u8, key: []const u8) ?[]u8 {
+    const needle = std.fmt.allocPrint(alloc, "\"{s}\":\"", .{key}) catch return null;
+    defer alloc.free(needle);
+    const start_pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    const val_start = start_pos + needle.len;
+    const val_end = std.mem.indexOfScalarPos(u8, json, val_start, '"') orelse return null;
+    return alloc.dupe(u8, json[val_start..val_end]) catch null;
+}
+
+fn extractJsonInt(json: []const u8, key: []const u8) ?i64 {
+    // Find "key": followed by digits
+    var buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&buf, "\"{s}\":", .{key}) catch return null;
+    const start_pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    var val_start = start_pos + needle.len;
+    while (val_start < json.len and json[val_start] == ' ') val_start += 1;
+    var val_end = val_start;
+    while (val_end < json.len and json[val_end] >= '0' and json[val_end] <= '9') val_end += 1;
+    return std.fmt.parseInt(i64, json[val_start..val_end], 10) catch null;
+}
 
 const ConnCtx = struct {
     stream: std.Io.net.Stream,
@@ -218,6 +344,7 @@ fn handleConn(ctx: *ConnCtx) void {
     const path = line[method_end + 1 .. method_end + 1 + path_end];
 
     var content_length: ?usize = null;
+    var auth_header: ?[]const u8 = null;
     while (true) {
         const header = reader.takeDelimiterInclusive('\n') catch return;
         if (header.len <= 2) break;
@@ -226,6 +353,9 @@ fn handleConn(ctx: *ConnCtx) void {
             const value = std.mem.trim(u8, trimmed[15..], " ");
             content_length = std.fmt.parseInt(usize, value, 10) catch null;
         }
+        if (std.mem.startsWith(u8, trimmed, "Authorization:")) {
+            auth_header = std.mem.trim(u8, trimmed[14..], " ");
+        }
     }
 
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/health")) {
@@ -233,33 +363,69 @@ fn handleConn(ctx: *ConnCtx) void {
         return;
     }
 
-    // /api/v1/* - Standard User APIs (require user auth)
+    // /api/v1/* - Standard User APIs
     if (std.mem.startsWith(u8, path, "/api/v1/")) {
-        // TODO: Verify user authentication token
-        // For now, allow all requests (implement JWT/session auth later)
+        const api_path = path[7..]; // keep leading slash, e.g. "/users"
 
-        const api_path = path[8..]; // Remove "/api/v1"
+        // /api/v1/auth is public (no token required)
+        if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, api_path, "/auth")) {
+            handleAuth(writer, ctx, reader, content_length) catch return;
+            return;
+        }
+
+        // All other /api/v1/* require a valid JWT
+        const bearer_prefix = "Bearer ";
+        const raw_token = if (auth_header) |ah| blk: {
+            if (!std.mem.startsWith(u8, ah, bearer_prefix)) break :blk null;
+            break :blk ah[bearer_prefix.len..];
+        } else null;
+
+        const claims: ?JwtClaims = if (raw_token) |tok|
+            verifyJwt(ctx.deps.alloc, tok, ctx.deps.jwt_secret) catch null
+        else
+            null;
+
+        if (claims == null) {
+            writeJsonResponse(writer, 401, "{\"error\":\"unauthorized\"}") catch return;
+            return;
+        }
+        const c_claims = claims.?;
+        defer {
+            ctx.deps.alloc.free(c_claims.email);
+            ctx.deps.alloc.free(c_claims.role);
+        }
+        const is_admin = std.mem.eql(u8, c_claims.role, "admin");
 
         if (std.mem.eql(u8, method, "GET")) {
             if (std.mem.eql(u8, api_path, "/users")) {
+                if (!is_admin) {
+                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                    return;
+                }
                 handleListUsers(writer, ctx) catch return;
                 return;
             }
             // GET /api/v1/mailboxes/{user}/folders
             if (std.mem.startsWith(u8, api_path, "/mailboxes/") and endsWith(api_path, "/folders")) {
                 const user = api_path[12 .. api_path.len - 8];
+                if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                    return;
+                }
                 writeUserFolders(writer, ctx, user) catch return;
                 return;
             }
             // GET /api/v1/mailboxes/{user}/messages?folder=INBOX
             if (std.mem.startsWith(u8, api_path, "/mailboxes/") and std.mem.indexOf(u8, api_path, "/messages") != null) {
-                // Extract user from path: /mailboxes/{user}/messages
-                const user_start = 12; // after "/mailboxes/"
+                const user_start = 12;
                 const user_end = std.mem.indexOf(u8, api_path, "/messages") orelse return;
                 const user = api_path[user_start..user_end];
-                // Extract folder from query string (simple parsing)
+                if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                    return;
+                }
                 const folder = if (std.mem.indexOf(u8, path, "folder=")) |pos| blk: {
-                    const start = pos + 7; // after "folder="
+                    const start = pos + 7;
                     const end = if (std.mem.indexOfPos(u8, path, start, "&")) |e| e else path.len;
                     break :blk path[start..end];
                 } else "INBOX";
@@ -268,12 +434,15 @@ fn handleConn(ctx: *ConnCtx) void {
             }
             // GET /api/v1/mailboxes/{user}/messages/{id}
             if (std.mem.startsWith(u8, api_path, "/mailboxes/")) {
-                // Check if it matches pattern /mailboxes/{user}/messages/{id}
                 const pattern = "/messages/";
                 if (std.mem.indexOf(u8, api_path, pattern)) |msg_pos| {
                     const user_start = 12;
                     const user_end = msg_pos;
                     const user = api_path[user_start..user_end];
+                    if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                        writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                        return;
+                    }
                     const id_start = msg_pos + pattern.len;
                     const id_str = api_path[id_start..];
                     const msg_id = std.fmt.parseInt(u32, id_str, 10) catch {
@@ -288,23 +457,43 @@ fn handleConn(ctx: *ConnCtx) void {
 
         if (std.mem.eql(u8, method, "POST")) {
             if (std.mem.eql(u8, api_path, "/users")) {
+                if (!is_admin) {
+                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                    return;
+                }
                 handleCreateUser(writer, ctx, reader, content_length) catch return;
-                return;
-            }
-            if (std.mem.eql(u8, api_path, "/auth")) {
-                handleAuth(writer, ctx, reader, content_length) catch return;
                 return;
             }
             // POST /api/v1/mailboxes/{user}/send
             if (std.mem.startsWith(u8, api_path, "/mailboxes/") and std.mem.endsWith(u8, api_path, "/send")) {
-                const user = api_path[12 .. api_path.len - 5]; // Remove "/mailboxes/" and "/send"
+                const user = api_path[12 .. api_path.len - 5];
+                if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                    return;
+                }
                 handleSendMessage(writer, ctx, reader, content_length, user) catch return;
+                return;
+            }
+        }
+
+        if (std.mem.eql(u8, method, "PUT")) {
+            if (std.mem.startsWith(u8, api_path, "/users/")) {
+                if (!is_admin) {
+                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                    return;
+                }
+                const email = api_path[7..];
+                handleUpdateUser(writer, ctx, reader, content_length, email) catch return;
                 return;
             }
         }
 
         if (std.mem.eql(u8, method, "DELETE")) {
             if (std.mem.startsWith(u8, api_path, "/users/")) {
+                if (!is_admin) {
+                    writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                    return;
+                }
                 const email = api_path[7..];
                 handleDeactivateUser(writer, ctx, email) catch return;
                 return;
@@ -316,6 +505,10 @@ fn handleConn(ctx: *ConnCtx) void {
                     const user_start = 12;
                     const user_end = msg_pos;
                     const user = api_path[user_start..user_end];
+                    if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                        writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                        return;
+                    }
                     const id_start = msg_pos + pattern.len;
                     const id_str = api_path[id_start..];
                     handleDeleteMessage(writer, ctx, user, id_str) catch return;
@@ -484,7 +677,10 @@ fn handleListUsers(writer: anytype, ctx: *ConnCtx) !void {
     const alloc = ctx.deps.alloc;
     const users = try ctx.deps.global_db.listUsers();
     defer {
-        for (users) |u| alloc.free(u.email);
+        for (users) |u| {
+            alloc.free(u.email);
+            alloc.free(u.role);
+        }
         alloc.free(users);
     }
     var buf = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
@@ -492,8 +688,9 @@ fn handleListUsers(writer: anytype, ctx: *ConnCtx) !void {
     try buf.appendSlice(alloc, "{\"users\":[");
     for (users, 0..) |u, i| {
         if (i > 0) try buf.append(alloc, ',');
-        const item = try std.fmt.allocPrint(alloc, "{{\"email\":\"{s}\",\"active\":{s},\"quota_bytes\":{d}}}", .{
+        const item = try std.fmt.allocPrint(alloc, "{{\"email\":\"{s}\",\"role\":\"{s}\",\"active\":{s},\"quota_bytes\":{d}}}", .{
             u.email,
+            u.role,
             if (u.active) "true" else "false",
             u.quota_bytes,
         });
@@ -521,17 +718,48 @@ fn handleCreateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, content_len
         if (n == 0) break;
         bytes_read += n;
     }
-    const CreateUserReq = struct { email: []const u8, password: []const u8 };
+    const CreateUserReq = struct { email: []const u8, password: []const u8, role: ?[]const u8 };
     const parsed = std.json.parseFromSlice(CreateUserReq, alloc, body[0..bytes_read], .{}) catch {
         try writeJsonResponse(writer, 400, "{\"error\":\"invalid json\"}");
         return;
     };
     defer parsed.deinit();
-    ctx.deps.global_db.createUser(parsed.value.email, parsed.value.password) catch {
+    const role = if (parsed.value.role) |r| r else "user";
+    ctx.deps.global_db.createUser(parsed.value.email, parsed.value.password, role) catch {
         try writeJsonResponse(writer, 409, "{\"error\":\"user already exists\"}");
         return;
     };
     try writeJsonResponse(writer, 201, "{\"status\":\"created\"}");
+}
+
+fn handleUpdateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize, email: []const u8) !void {
+    const alloc = ctx.deps.alloc;
+    const body_size = content_length orelse 4096;
+    if (body_size > 1024 * 1024) {
+        try writer.print("HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n", .{});
+        return;
+    }
+    const body = try alloc.alloc(u8, body_size);
+    defer alloc.free(body);
+    var bytes_read: usize = 0;
+    while (bytes_read < body_size) {
+        const slice: []u8 = body[bytes_read..];
+        var slices: [1][]u8 = .{slice};
+        const n = reader.readVec(&slices) catch break;
+        if (n == 0) break;
+        bytes_read += n;
+    }
+    const UpdateReq = struct { role: ?[]const u8, quota_bytes: ?i64, active: ?bool };
+    const parsed = std.json.parseFromSlice(UpdateReq, alloc, body[0..bytes_read], .{}) catch {
+        try writeJsonResponse(writer, 400, "{\"error\":\"invalid json\"}");
+        return;
+    };
+    defer parsed.deinit();
+    ctx.deps.global_db.updateUser(email, parsed.value.role, parsed.value.quota_bytes, parsed.value.active) catch {
+        try writeJsonResponse(writer, 500, "{\"error\":\"internal error\"}");
+        return;
+    };
+    try writeJsonResponse(writer, 200, "{\"status\":\"updated\"}");
 }
 
 fn handleDeactivateUser(writer: anytype, ctx: *ConnCtx, email: []const u8) !void {
@@ -651,10 +879,15 @@ fn handleAuth(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?
         try writeJsonResponse(writer, 401, "{\"error\":\"invalid credentials\"}");
         return;
     }
-    // TODO: Generate JWT token
-    const token = try std.fmt.allocPrint(alloc, "{{\"token\":\"user-token-for-{s}\",\"email\":\"{s}\"}}", .{ parsed.value.email, parsed.value.email });
-    defer alloc.free(token);
-    try writeJsonResponse(writer, 200, token);
+    const role = ctx.deps.global_db.getUserRole(parsed.value.email) catch "user";
+    defer alloc.free(role);
+    const exp = std.time.timestamp() + 86400; // 24h
+    const jwt = try signJwt(alloc, parsed.value.email, role, ctx.deps.jwt_secret, exp);
+    defer alloc.free(jwt);
+    const body = try std.fmt.allocPrint(alloc,
+        "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"{s}\"}}", .{ jwt, parsed.value.email, role });
+    defer alloc.free(body);
+    try writeJsonResponse(writer, 200, body);
 }
 
 // Handle listing messages in a folder

@@ -26,6 +26,9 @@ pub const GlobalDb = struct {
         if (!hasColumn(db, "users", "active")) {
             try exec(db, "ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1");
         }
+        if (!hasColumn(db, "users", "role")) {
+            try exec(db, "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
+        }
         return .{ .db = db, .alloc = alloc, .io = io };
     }
 
@@ -56,16 +59,19 @@ pub const GlobalDb = struct {
         return c.sqlite3_step(stmt) == c.SQLITE_ROW;
     }
 
-    pub fn createUser(self: *GlobalDb, email: []const u8, password: []const u8) !void {
+    pub fn createUser(self: *GlobalDb, email: []const u8, password: []const u8, role: []const u8) !void {
         var hash_buf: [256]u8 = undefined;
         const stored = try argon2.strHash(password, .{
             .allocator = self.alloc,
             .params = argon2.Params.owasp_2id,
             .mode = .argon2id,
         }, &hash_buf, self.io);
-        try bindExec(self.db,
-            "INSERT INTO users (email, password_hash) VALUES (?, ?)",
-            .{ email, stored });
+        bindExec(self.db,
+            "INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)",
+            .{ email, stored, role }) catch |err| {
+            std.log.err("createUser error: {}", .{err});
+            return error.UserAlreadyExists;
+        };
     }
 
     pub fn authenticate(self: *GlobalDb, email: []const u8, password: []const u8) !bool {
@@ -102,22 +108,49 @@ pub const GlobalDb = struct {
         try bindExec(self.db, "UPDATE users SET active=0 WHERE email=?", .{email});
     }
 
-    pub const UserInfo = struct { email: []u8, active: bool, quota_bytes: i64 };
+    pub const UserInfo = struct { email: []u8, role: []u8, active: bool, quota_bytes: i64 };
 
     pub fn listUsers(self: *GlobalDb) ![]UserInfo {
         const stmt = try prepare(self.db,
-            "SELECT email, active, quota_bytes FROM users ORDER BY email");
+            "SELECT email, role, active, quota_bytes FROM users ORDER BY email");
         defer _ = c.sqlite3_finalize(stmt);
         var list: std.ArrayList(UserInfo) = .{ .items = &.{}, .capacity = 0 };
         while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
             const email = try self.alloc.dupe(u8, columnText(stmt, 0));
+            const role = try self.alloc.dupe(u8, columnText(stmt, 1));
             try list.append(self.alloc, .{
                 .email = email,
-                .active = c.sqlite3_column_int(stmt, 1) != 0,
-                .quota_bytes = c.sqlite3_column_int64(stmt, 2),
+                .role = role,
+                .active = c.sqlite3_column_int(stmt, 2) != 0,
+                .quota_bytes = c.sqlite3_column_int64(stmt, 3),
             });
         }
         return list.toOwnedSlice(self.alloc);
+    }
+
+    pub fn getUserRole(self: *GlobalDb, email: []const u8) ![]const u8 {
+        const stmt = try prepare(self.db, "SELECT role FROM users WHERE email=? AND active=1");
+        defer _ = c.sqlite3_finalize(stmt);
+        bindText(stmt, 1, email);
+        if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return error.UserNotFound;
+        return self.alloc.dupe(u8, columnText(stmt, 0));
+    }
+
+    pub fn updateUser(self: *GlobalDb, email: []const u8, role: ?[]const u8, quota_bytes: ?i64, active: ?bool) !void {
+        if (role) |r| {
+            try bindExec(self.db, "UPDATE users SET role=? WHERE email=?", .{ r, email });
+        }
+        if (quota_bytes) |q| {
+            const sql = try std.fmt.allocPrint(self.alloc, "UPDATE users SET quota_bytes={d} WHERE email=?", .{q});
+            defer self.alloc.free(sql);
+            try bindExec(self.db, sql, .{email});
+        }
+        if (active) |a| {
+            const val: i64 = if (a) 1 else 0;
+            const sql = try std.fmt.allocPrint(self.alloc, "UPDATE users SET active={d} WHERE email=?", .{val});
+            defer self.alloc.free(sql);
+            try bindExec(self.db, sql, .{email});
+        }
     }
 };
 
@@ -170,14 +203,15 @@ const schema =
     \\CREATE TABLE IF NOT EXISTS domains (
     \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
     \\  domain TEXT NOT NULL UNIQUE,
-    \\  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    \\  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     \\);
     \\CREATE TABLE IF NOT EXISTS users (
     \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
     \\  email TEXT NOT NULL UNIQUE,
     \\  password_hash TEXT NOT NULL,
+    \\  role TEXT NOT NULL DEFAULT 'user',
     \\  quota_bytes INTEGER NOT NULL DEFAULT 1073741824,
     \\  active INTEGER NOT NULL DEFAULT 1,
-    \\  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    \\  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     \\);
 ;
