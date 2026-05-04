@@ -34,7 +34,7 @@ zig build -Doptimize=ReleaseFast
 
 ```bash
 # Use non-privileged ports (recommended for development)
-YP_SMTP_PORT=2525 YP_SUBMISSION_PORT=2587 YP_POP3_PORT=2110 YP_IMAP_PORT=2143 YP_API_PORT=9000 ./zig-out/bin/yourpost
+YP_SMTP_PORT=2525 YP_SUBMISSION_PORT=2587 YP_POP3_PORT=2110 YP_IMAP_PORT=2143 YP_API_PORT=9000 YP_SERVICE_PORT=9001 ./zig-out/bin/yourpost
 
 # Or use default ports (requires root/sudo for ports < 1024)
 sudo ./zig-out/bin/yourpost
