@@ -424,8 +424,8 @@ YourPost is free software licensed under the **AGPLv3**. See [LICENSE](LICENSE) 
 ## 📞 Support
 
 - **Documentation**: [docs/](docs/)
-- **Issues**: [GitHub Issues](https://github.com/yourpost/yourpost/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourpost/yourpost/discussions)
+- **Issues**: [GitHub Issues](https://github.com/YourPostHQ/YourPost/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/YourPostHQ/YourPost/discussions)
 
 ---
 

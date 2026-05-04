@@ -6,7 +6,7 @@ This document provides a complete summary of all documentation created for the Y
 
 ## 🎯 Project Information
 
-- **Repository**: [github.com/yourpost/yourpost](https://github.com/yourpost/yourpost)
+- **Repository**: [github.com/YourPostHQ/YourPost](https://github.com/YourPostHQ/YourPost)
 - **Documentation Site**: [yourpost.io](https://yourpost.io)
 - **Live Demo**: [yourpost.app](https://yourpost.app)
 - **Organization**: Devstroop Technologies ([devstroop.com](https://devstroop.com))

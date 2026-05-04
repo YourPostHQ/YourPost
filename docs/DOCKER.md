@@ -38,7 +38,7 @@ sudo docker run -d \
 
 ```bash
 # Clone repository
-git clone https://github.com/yourpost/yourpost.git
+git clone https://github.com/YourPostHQ/YourPost.git
 cd yourpost
 
 # Build Docker image

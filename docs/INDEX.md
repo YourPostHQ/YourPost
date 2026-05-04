@@ -214,8 +214,8 @@ YourPost is licensed under AGPLv3 - see [LICENSE](../LICENSE) for details.
 
 ## Additional Resources
 
-- [GitHub Repository](https://github.com/yourpost/yourpost)
-- [Issue Tracker](https://github.com/yourpost/yourpost/issues)
+- [GitHub Repository](https://github.com/YourPostHQ/YourPost)
+- [Issue Tracker](https://github.com/YourPostHQ/YourPost/issues)
 - [Changelog](../CHANGELOG.md)
 - [Examples](../examples/)
 

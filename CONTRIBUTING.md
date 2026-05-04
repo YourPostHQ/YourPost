@@ -6,7 +6,7 @@ Thank you for your interest in contributing to YourPost! This document provides 
 
 ### Repository Structure
 
-- **GitHub**: [github.com/yourpost/yourpost](https://github.com/yourpost/yourpost)
+- **GitHub**: [github.com/YourPostHQ/YourPost](https://github.com/YourPostHQ/YourPost)
 - **Documentation**: [yourpost.io](https://yourpost.io)
 - **Live Demo**: [yourpost.app](https://yourpost.app)
 - **Organization**: [Devstroop Technologies](https://devstroop.com)
@@ -57,7 +57,7 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to ensure a wel
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourpost/yourpost.git
+git clone https://github.com/YourPostHQ/YourPost.git
 cd yourpost
 
 # Build
