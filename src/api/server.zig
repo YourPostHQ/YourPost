@@ -27,7 +27,7 @@ const JwtClaims = struct {
 const base64url = std.base64.Base64Encoder.init(std.base64.url_safe_alphabet_chars, null);
 
 fn base64urlEncode(alloc: std.mem.Allocator, data: []const u8) ![]u8 {
-    const len = std.base64.Base64Encoder.calcSize(data.len);
+    const len = base64url.calcSize(data.len);
     const buf = try alloc.alloc(u8, len);
     const result = base64url.encode(buf, data);
     return buf[0..result.len];
@@ -112,7 +112,7 @@ fn verifyJwt(alloc: std.mem.Allocator, token: []const u8, secret: []const u8) !J
 
     // Check expiry
     if (extractJsonInt(payload_json, "exp")) |exp| {
-        const now = std.time.timestamp();
+        const now = c.time(null);
         if (now > exp) {
             alloc.free(email);
             alloc.free(role);
@@ -871,13 +871,13 @@ fn handleAuth(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?
     }
     const role = ctx.deps.global_db.getUserRole(parsed.value.email) catch "user";
     defer alloc.free(role);
-    const exp = std.time.timestamp() + 86400; // 24h
+    const exp = c.time(null) + 86400; // 24h
     const jwt = try signJwt(alloc, parsed.value.email, role, ctx.deps.jwt_secret, exp);
     defer alloc.free(jwt);
-    const body = try std.fmt.allocPrint(alloc,
+    const response_body = try std.fmt.allocPrint(alloc,
         "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"{s}\"}}", .{ jwt, parsed.value.email, role });
-    defer alloc.free(body);
-    try writeJsonResponse(writer, 200, body);
+    defer alloc.free(response_body);
+    try writeJsonResponse(writer, 200, response_body);
 }
 
 // Handle listing messages in a folder
