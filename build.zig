@@ -20,9 +20,17 @@ pub fn build(b: *std.Build) void {
         root_mod.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
     }
 
-    root_mod.linkSystemLibrary("sqlite3", .{});
-    root_mod.linkSystemLibrary("ssl", .{});
-    root_mod.linkSystemLibrary("crypto", .{});
+    // For cross-compilation to aarch64-linux, use static linking or add ARM library paths
+    if (target.result.os.tag == .linux and target.result.cpu.arch == .aarch64) {
+        // Try to link statically to avoid needing ARM shared libraries
+        root_mod.linkSystemLibrary("sqlite3", .{ .preferred_link_mode = .static });
+        root_mod.linkSystemLibrary("ssl", .{ .preferred_link_mode = .static });
+        root_mod.linkSystemLibrary("crypto", .{ .preferred_link_mode = .static });
+    } else {
+        root_mod.linkSystemLibrary("sqlite3", .{});
+        root_mod.linkSystemLibrary("ssl", .{});
+        root_mod.linkSystemLibrary("crypto", .{});
+    }
 
     const exe = b.addExecutable(.{
         .name = "yourpost",
@@ -60,9 +68,16 @@ pub fn build(b: *std.Build) void {
         test_mod.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
     }
 
-    test_mod.linkSystemLibrary("sqlite3", .{});
-    test_mod.linkSystemLibrary("ssl", .{});
-    test_mod.linkSystemLibrary("crypto", .{});
+    // For cross-compilation to aarch64-linux, use static linking
+    if (target.result.os.tag == .linux and target.result.cpu.arch == .aarch64) {
+        test_mod.linkSystemLibrary("sqlite3", .{ .preferred_link_mode = .static });
+        test_mod.linkSystemLibrary("ssl", .{ .preferred_link_mode = .static });
+        test_mod.linkSystemLibrary("crypto", .{ .preferred_link_mode = .static });
+    } else {
+        test_mod.linkSystemLibrary("sqlite3", .{});
+        test_mod.linkSystemLibrary("ssl", .{});
+        test_mod.linkSystemLibrary("crypto", .{});
+    }
     const tests = b.addTest(.{ .root_module = test_mod });
     b.step("test", "Run tests").dependOn(&tests.step);
 }
