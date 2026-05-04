@@ -20,9 +20,20 @@ pub fn build(b: *std.Build) void {
         root_mod.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
     }
 
-    // For cross-compilation to aarch64-linux, use static linking or add ARM library paths
-    if (target.result.os.tag == .linux and target.result.cpu.arch == .aarch64) {
-        // Try to link statically to avoid needing ARM shared libraries
+    // For cross-compilation to aarch64-linux or riscv64-linux, add target library paths and link statically
+    const is_cross_linux_arm = target.result.os.tag == .linux and target.result.cpu.arch == .aarch64;
+    const is_cross_linux_riscv = target.result.os.tag == .linux and target.result.cpu.arch == .riscv64;
+    if (is_cross_linux_arm) {
+        // Add ARM64 library paths for cross-compilation
+        root_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
+        root_mod.addIncludePath(.{ .cwd_relative = "/usr/include/aarch64-linux-gnu" });
+        root_mod.linkSystemLibrary("sqlite3", .{ .preferred_link_mode = .static });
+        root_mod.linkSystemLibrary("ssl", .{ .preferred_link_mode = .static });
+        root_mod.linkSystemLibrary("crypto", .{ .preferred_link_mode = .static });
+    } else if (is_cross_linux_riscv) {
+        // Add RISCV64 library paths for cross-compilation
+        root_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/riscv64-linux-gnu" });
+        root_mod.addIncludePath(.{ .cwd_relative = "/usr/include/riscv64-linux-gnu" });
         root_mod.linkSystemLibrary("sqlite3", .{ .preferred_link_mode = .static });
         root_mod.linkSystemLibrary("ssl", .{ .preferred_link_mode = .static });
         root_mod.linkSystemLibrary("crypto", .{ .preferred_link_mode = .static });
@@ -68,8 +79,18 @@ pub fn build(b: *std.Build) void {
         test_mod.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
     }
 
-    // For cross-compilation to aarch64-linux, use static linking
-    if (target.result.os.tag == .linux and target.result.cpu.arch == .aarch64) {
+    // For cross-compilation to aarch64-linux or riscv64-linux, add target library paths and link statically
+    const is_cross_linux_arm_test = target.result.os.tag == .linux and target.result.cpu.arch == .aarch64;
+    const is_cross_linux_riscv_test = target.result.os.tag == .linux and target.result.cpu.arch == .riscv64;
+    if (is_cross_linux_arm_test) {
+        test_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
+        test_mod.addIncludePath(.{ .cwd_relative = "/usr/include/aarch64-linux-gnu" });
+        test_mod.linkSystemLibrary("sqlite3", .{ .preferred_link_mode = .static });
+        test_mod.linkSystemLibrary("ssl", .{ .preferred_link_mode = .static });
+        test_mod.linkSystemLibrary("crypto", .{ .preferred_link_mode = .static });
+    } else if (is_cross_linux_riscv_test) {
+        test_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib/riscv64-linux-gnu" });
+        test_mod.addIncludePath(.{ .cwd_relative = "/usr/include/riscv64-linux-gnu" });
         test_mod.linkSystemLibrary("sqlite3", .{ .preferred_link_mode = .static });
         test_mod.linkSystemLibrary("ssl", .{ .preferred_link_mode = .static });
         test_mod.linkSystemLibrary("crypto", .{ .preferred_link_mode = .static });
