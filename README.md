@@ -5,6 +5,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com)
 [![CI](https://github.com/YourPostHQ/YourPost/actions/workflows/ci.yml/badge.svg)](https://github.com/YourPostHQ/YourPost/actions/workflows/ci.yml)
 [![Docker](https://github.com/YourPostHQ/YourPost/actions/workflows/docker.yml/badge.svg)](https://github.com/YourPostHQ/YourPost/actions/workflows/docker.yml)
+[![Release](https://github.com/YourPostHQ/YourPost/actions/workflows/release.yml/badge.svg)](https://github.com/YourPostHQ/YourPost/actions/workflows/release.yml)
 
 A lightweight, high-performance mail server written in Zig, supporting SMTP, POP3, IMAP, and HTTP API with Cloudflare Email Worker integration.
 
