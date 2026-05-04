@@ -1,0 +1,14 @@
+# Code owners for the project
+
+# Global owners
+* @YourPostHQ/maintainers
+
+# CI and workflows
+.github/ @YourPostHQ/maintainers
+
+# Documentation
+/docs/ @YourPostHQ/docs-team
+yourpost-docs/ @YourPostHQ/docs-team
+
+# Core server code
+/src/ @YourPostHQ/core-team

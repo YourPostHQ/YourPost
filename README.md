@@ -3,6 +3,8 @@
 [![License: AGPLv3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Zig](https://img.shields.io/badge/Zig-0.16.0-orange.svg)](https://ziglang.org)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com)
+[![CI](https://github.com/YourPostHQ/YourPost/actions/workflows/ci.yml/badge.svg)](https://github.com/YourPostHQ/YourPost/actions/workflows/ci.yml)
+[![Docker](https://github.com/YourPostHQ/YourPost/actions/workflows/docker.yml/badge.svg)](https://github.com/YourPostHQ/YourPost/actions/workflows/docker.yml)
 
 A lightweight, high-performance mail server written in Zig, supporting SMTP, POP3, IMAP, and HTTP API with Cloudflare Email Worker integration.
 
