@@ -96,6 +96,14 @@ pub const GlobalDb = struct {
         return c.sqlite3_step(stmt) == c.SQLITE_ROW;
     }
 
+    pub fn getUserCount(self: *GlobalDb) usize {
+        const stmt = prepare(self.db, "SELECT COUNT(*) FROM users") catch return 0;
+        defer _ = c.sqlite3_finalize(stmt);
+        if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return 0;
+        const count: i64 = c.sqlite3_column_int64(stmt, 0);
+        return @intCast(count);
+    }
+
     pub fn getUserQuota(self: *GlobalDb, email: []const u8) !i64 {
         const stmt = try prepare(self.db, "SELECT quota_bytes FROM users WHERE email=? AND active=1");
         defer _ = c.sqlite3_finalize(stmt);

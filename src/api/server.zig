@@ -369,6 +369,12 @@ fn handleConn(ctx: *ConnCtx) void {
         return;
     }
 
+    // ── Public: POST /api/v1/register (domain owner registration) ───────────
+    if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, path, "/api/v1/register")) {
+        handleRegister(writer, ctx, reader, content_length) catch return;
+        return;
+    }
+
     // All other /api/v1/* require a valid JWT — extract and verify once.
     if (std.mem.startsWith(u8, path, "/api/v1/")) {
         const bearer_prefix = "Bearer ";
@@ -878,6 +884,57 @@ fn handleAuth(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?
         "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"{s}\"}}", .{ jwt, parsed.value.email, role });
     defer alloc.free(response_body);
     try writeJsonResponse(writer, 200, response_body);
+}
+
+// Handle domain owner registration (public endpoint)
+fn handleRegister(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize) !void {
+    const alloc = ctx.deps.alloc;
+    const body_size = content_length orelse 4096;
+    if (body_size > 1024 * 1024) {
+        try writer.print("HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n", .{});
+        return;
+    }
+    const body = try alloc.alloc(u8, body_size);
+    defer alloc.free(body);
+    var bytes_read: usize = 0;
+    while (bytes_read < body_size) {
+        const slice: []u8 = body[bytes_read..];
+        var slices: [1][]u8 = .{slice};
+        const n = reader.readVec(&slices) catch break;
+        if (n == 0) break;
+        bytes_read += n;
+    }
+    const RegisterReq = struct { email: []const u8, password: []const u8, domain: ?[]const u8 };
+    const parsed = std.json.parseFromSlice(RegisterReq, alloc, body[0..bytes_read], .{}) catch {
+        try writeJsonResponse(writer, 400, "{\"error\":\"invalid json\"}");
+        return;
+    };
+    defer parsed.deinit();
+
+    // Check if this is the first user (becomes admin)
+    const is_first_user = ctx.deps.global_db.getUserCount() == 0;
+    const role: []const u8 = if (is_first_user) "admin" else "user";
+
+    // If not first user, require a valid registration token or admin approval
+    if (!is_first_user) {
+        // For now, only allow admin to create users via /api/v1/admin/users
+        try writeJsonResponse(writer, 403, "{\"error\":\"registration closed - contact admin\"}");
+        return;
+    }
+
+    ctx.deps.global_db.createUser(parsed.value.email, parsed.value.password, role) catch {
+        try writeJsonResponse(writer, 409, "{\"error\":\"user already exists\"}");
+        return;
+    };
+
+    // Auto-login after registration
+    const exp = c.time(null) + 86400; // 24h
+    const jwt = try signJwt(alloc, parsed.value.email, role, ctx.deps.jwt_secret, exp);
+    defer alloc.free(jwt);
+    const response_body = try std.fmt.allocPrint(alloc,
+        "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"{s}\"}}", .{ jwt, parsed.value.email, role });
+    defer alloc.free(response_body);
+    try writeJsonResponse(writer, 201, response_body);
 }
 
 // Handle listing messages in a folder
