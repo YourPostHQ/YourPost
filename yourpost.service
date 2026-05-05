@@ -5,15 +5,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=yourpost
-Group=yourpost
+# Running as root to bind to privileged ports (25, 110, 143, 465, 587, 993, 995)
+# Alternative: use AmbientCapabilities=CAP_NET_BIND_SERVICE with non-root user
+User=root
+Group=root
 WorkingDirectory=/var/lib/yourpost
 ExecStart=/usr/local/bin/yourpost
 Restart=on-failure
 RestartSec=5s
-# Security hardening
+# Security hardening (removed NoNewPrivileges since we need root for privileged ports)
 AmbientCapabilities=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
