@@ -312,6 +312,12 @@ fn handleServiceConn(ctx: *ConnCtx) void {
         }
     }
 
+    // ── CORS Preflight ───────────────────────────────────────────────────
+    if (std.mem.eql(u8, method, "OPTIONS")) {
+        writeCorsPreflight(writer) catch return;
+        return;
+    }
+
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/health")) {
         writeJsonResponse(writer, 200, makeHealthBody()) catch return;
         return;
@@ -383,6 +389,12 @@ fn handleConn(ctx: *ConnCtx) void {
         if (std.mem.startsWith(u8, trimmed, "Authorization:")) {
             auth_header = std.mem.trim(u8, trimmed[14..], " ");
         }
+    }
+
+    // ── CORS Preflight ───────────────────────────────────────────────────────
+    if (std.mem.eql(u8, method, "OPTIONS")) {
+        writeCorsPreflight(writer) catch return;
+        return;
     }
 
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/health")) {
@@ -962,9 +974,21 @@ fn writeJsonResponse(writer: anytype, status: u16, body: []const u8) !void {
     try writer.print("HTTP/1.1 {d} OK\r\n", .{status});
     try writer.print("Content-Type: application/json; charset=utf-8\r\n", .{});
     try writer.print("Content-Length: {d}\r\n", .{body.len});
+    try writer.writeAll("Access-Control-Allow-Origin: https://yourpost.app\r\n");
+    try writer.writeAll("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n");
+    try writer.writeAll("Access-Control-Allow-Headers: Content-Type, Authorization\r\n");
     try writer.writeAll("Connection: close\r\n\r\n");
     try writer.writeAll(body);
     try writer.flush();
+}
+
+fn writeCorsPreflight(writer: anytype) !void {
+    try writer.writeAll("HTTP/1.1 204 No Content\r\n");
+    try writer.writeAll("Access-Control-Allow-Origin: https://yourpost.app\r\n");
+    try writer.writeAll("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n");
+    try writer.writeAll("Access-Control-Allow-Headers: Content-Type, Authorization\r\n");
+    try writer.writeAll("Access-Control-Max-Age: 86400\r\n");
+    try writer.writeAll("Connection: close\r\n\r\n");
 }
 
 fn writeNotFound(writer: anytype) !void {
@@ -972,6 +996,7 @@ fn writeNotFound(writer: anytype) !void {
     try writer.print("HTTP/1.1 404 Not Found\r\n", .{});
     try writer.print("Content-Type: application/json; charset=utf-8\r\n", .{});
     try writer.print("Content-Length: {d}\r\n", .{body.len});
+    try writer.writeAll("Access-Control-Allow-Origin: https://yourpost.app\r\n");
     try writer.writeAll("Connection: close\r\n\r\n");
     try writer.writeAll(body);
     try writer.flush();
@@ -982,6 +1007,7 @@ fn writeApiInfo(writer: anytype) !void {
     try writer.print("HTTP/1.1 200 OK\r\n", .{});
     try writer.print("Content-Type: application/json; charset=utf-8\r\n", .{});
     try writer.print("Content-Length: {d}\r\n", .{body.len});
+    try writer.writeAll("Access-Control-Allow-Origin: https://yourpost.app\r\n");
     try writer.writeAll("Connection: close\r\n\r\n");
     try writer.writeAll(body);
     try writer.flush();
