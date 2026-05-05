@@ -344,7 +344,8 @@ fn handleServiceConn(ctx: *ConnCtx) void {
                 return;
             }
         }
-        const service_path = path[13..];
+        // path is like "/api/service/incoming", skip "/api/service" (12 chars) to get "/incoming"
+        const service_path = path[12..];
         if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, service_path, "/incoming")) {
             handleIncoming(writer, ctx, reader, content_length) catch return;
             return;
