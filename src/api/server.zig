@@ -80,8 +80,7 @@ fn signJwt(alloc: std.mem.Allocator, email: []const u8, role: []const u8, domain
     const header_enc = try base64urlEncode(alloc, header_json);
     defer alloc.free(header_enc);
 
-    const payload_json = try std.fmt.allocPrint(alloc,
-        "{{\"email\":\"{s}\",\"role\":\"{s}\",\"domain\":\"{s}\",\"exp\":{d}}}", .{ email, role, domain, exp });
+    const payload_json = try std.fmt.allocPrint(alloc, "{{\"email\":\"{s}\",\"role\":\"{s}\",\"domain\":\"{s}\",\"exp\":{d}}}", .{ email, role, domain, exp });
     defer alloc.free(payload_json);
     const payload_enc = try base64urlEncode(alloc, payload_json);
     defer alloc.free(payload_enc);
@@ -387,7 +386,6 @@ fn handleConn(ctx: *ConnCtx) void {
         return;
     }
 
-
     var content_length: ?usize = null;
     var auth_header: ?[]const u8 = null;
     while (true) {
@@ -402,7 +400,6 @@ fn handleConn(ctx: *ConnCtx) void {
             auth_header = std.mem.trim(u8, trimmed[14..], " ");
         }
     }
-
 
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/health")) {
         writeJsonResponse(writer, 200, makeHealthBody()) catch return;
@@ -621,6 +618,13 @@ fn handleConn(ctx: *ConnCtx) void {
 fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize) !void {
     const alloc = ctx.deps.alloc;
     std.log.info("handleIncoming called, content_length={?}", .{content_length});
+    errdefer |err| {
+        std.log.err("handleIncoming failed with: {}", .{err});
+        writer.print("HTTP/1.1 500 Internal Server Error\r\n", .{}) catch {};
+        writer.writeAll("Content-Type: application/json\r\n") catch {};
+        writer.print("Content-Length: 100\r\n\r\n", .{}) catch {};
+        writer.print("{{\"error\":\"internal error: {s}\"}}", .{@errorName(err)}) catch {};
+    }
 
     // Read body based on Content-Length, or read until connection closes
     const body_size = content_length orelse 64 * 1024; // Default 64KB if no Content-Length
@@ -714,22 +718,29 @@ fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
 
     std.log.info("Opening/creating user db at: {s}", .{db_path_str});
     var udb = UserDb.open(alloc, db_path) catch |err| {
-        std.log.err("Failed to open user db: {}", .{err});
+        std.log.err("Failed to open user db '{s}': {}", .{ db_path_str, err });
         try writer.print("HTTP/1.1 500 Internal Server Error\r\n", .{});
-        try writer.writeAll("Content-Length: 0\r\n\r\n");
+        try writer.writeAll("Content-Type: application/json\r\n");
+        try writer.print("Content-Length: 50\r\n\r\n", .{});
+        try writer.print("{{\"error\":\"db open failed: {s}\"}}", .{@errorName(err)});
         return;
     };
     defer udb.close();
 
+    std.log.info("Getting INBOX folder for {s}", .{username});
     const folder = udb.getFolderByName("INBOX") catch |err| {
         std.log.err("Failed to get INBOX: {}", .{err});
         try writer.print("HTTP/1.1 500 Internal Server Error\r\n", .{});
-        try writer.writeAll("Content-Length: 0\r\n\r\n");
+        try writer.writeAll("Content-Type: application/json\r\n");
+        try writer.print("Content-Length: 50\r\n\r\n", .{});
+        try writer.print("{{\"error\":\"get INBOX failed: {s}\"}}", .{@errorName(err)});
         return;
     } orelse {
-        std.log.err("INBOX not found", .{});
+        std.log.err("INBOX not found for {s}", .{username});
         try writer.print("HTTP/1.1 500 Internal Server Error\r\n", .{});
-        try writer.writeAll("Content-Length: 0\r\n\r\n");
+        try writer.writeAll("Content-Type: application/json\r\n");
+        try writer.print("Content-Length: 50\r\n\r\n", .{});
+        try writer.writeAll("{\"error\":\"INBOX not found\"}");
         return;
     };
 
@@ -780,11 +791,9 @@ fn handleListUsers(writer: anytype, ctx: *ConnCtx, caller_domain: ?[]const u8) !
     try buf.appendSlice(alloc, "{\"users\":[");
     for (users, 0..) |u, i| {
         if (i > 0) try buf.append(alloc, ',');
-        const item = try std.fmt.allocPrint(alloc,
-            "{{\"email\":\"{s}\",\"role\":\"{s}\",\"domain\":\"{s}\",\"active\":{s},\"quota_bytes\":{d}}}", .{
-            u.email, u.role, u.domain,
-            if (u.active) "true" else "false",
-            u.quota_bytes,
+        const item = try std.fmt.allocPrint(alloc, "{{\"email\":\"{s}\",\"role\":\"{s}\",\"domain\":\"{s}\",\"active\":{s},\"quota_bytes\":{d}}}", .{
+            u.email,                           u.role,        u.domain,
+            if (u.active) "true" else "false", u.quota_bytes,
         });
         defer alloc.free(item);
         try buf.appendSlice(alloc, item);
@@ -809,8 +818,7 @@ fn handleSystemListDomains(writer: anytype, ctx: *ConnCtx) !void {
     try buf.appendSlice(alloc, "{\"domains\":[");
     for (domains, 0..) |d, i| {
         if (i > 0) try buf.append(alloc, ',');
-        const item = try std.fmt.allocPrint(alloc,
-            "{{\"domain\":\"{s}\",\"created_at\":{d}}}", .{ d.domain, d.created_at });
+        const item = try std.fmt.allocPrint(alloc, "{{\"domain\":\"{s}\",\"created_at\":{d}}}", .{ d.domain, d.created_at });
         defer alloc.free(item);
         try buf.appendSlice(alloc, item);
     }
@@ -1108,8 +1116,7 @@ fn handleAuth(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?
     const exp = c.time(null) + 86400; // 24h
     const jwt = try signJwt(alloc, parsed.value.email, role, domain, ctx.deps.jwt_secret, exp);
     defer alloc.free(jwt);
-    const response_body = try std.fmt.allocPrint(alloc,
-        "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"{s}\",\"domain\":\"{s}\"}}", .{ jwt, parsed.value.email, role, domain });
+    const response_body = try std.fmt.allocPrint(alloc, "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"{s}\",\"domain\":\"{s}\"}}", .{ jwt, parsed.value.email, role, domain });
     defer alloc.free(response_body);
     try writeJsonResponse(writer, 200, response_body);
 }
@@ -1160,8 +1167,7 @@ fn handleRegister(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
     const exp = c.time(null) + 86400;
     const jwt = try signJwt(alloc, parsed.value.email, "admin", parsed.value.domain, ctx.deps.jwt_secret, exp);
     defer alloc.free(jwt);
-    const response_body = try std.fmt.allocPrint(alloc,
-        "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"admin\",\"domain\":\"{s}\"}}", .{ jwt, parsed.value.email, parsed.value.domain });
+    const response_body = try std.fmt.allocPrint(alloc, "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"admin\",\"domain\":\"{s}\"}}", .{ jwt, parsed.value.email, parsed.value.domain });
     defer alloc.free(response_body);
     try writeJsonResponse(writer, 201, response_body);
 }

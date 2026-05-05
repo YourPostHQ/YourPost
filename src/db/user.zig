@@ -80,18 +80,15 @@ pub const UserDb = struct {
     // ----- Folders -----
 
     pub fn createFolder(self: *UserDb, name: []const u8) !void {
-        try bindExec(self.db,
-            "INSERT OR IGNORE INTO folders (name) VALUES (?)", .{name});
+        try bindExec(self.db, "INSERT OR IGNORE INTO folders (name) VALUES (?)", .{name});
     }
 
     pub fn deleteFolder(self: *UserDb, name: []const u8) !void {
-        try bindExec(self.db,
-            "DELETE FROM folders WHERE name=? AND name!='INBOX'", .{name});
+        try bindExec(self.db, "DELETE FROM folders WHERE name=? AND name!='INBOX'", .{name});
     }
 
     pub fn renameFolder(self: *UserDb, old: []const u8, new: []const u8) !void {
-        try bindExec2(self.db,
-            "UPDATE folders SET name=? WHERE name=?", new, old);
+        try bindExec2(self.db, "UPDATE folders SET name=? WHERE name=?", new, old);
     }
 
     pub const FolderInfo = struct { id: i64, name: []u8, uidvalidity: u32, uidnext: u32, subscribed: bool };
@@ -115,8 +112,7 @@ pub const UserDb = struct {
     }
 
     pub fn getFolderByName(self: *UserDb, name: []const u8) !?FolderInfo {
-        const stmt = try prepare(self.db,
-            "SELECT id,name,uidvalidity,uidnext,subscribed FROM folders WHERE name=?");
+        const stmt = try prepare(self.db, "SELECT id,name,uidvalidity,uidnext,subscribed FROM folders WHERE name=?");
         defer _ = c.sqlite3_finalize(stmt);
         bindText(stmt, 1, name);
         if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return null;
@@ -145,8 +141,7 @@ pub const UserDb = struct {
         const recent: u32 = @intCast(@max(0, c.sqlite3_column_int(stmt, 1)));
         const unseen: u32 = @intCast(@max(0, c.sqlite3_column_int(stmt, 2)));
 
-        const s2 = try prepare(self.db,
-            "SELECT uidnext,uidvalidity FROM folders WHERE id=?");
+        const s2 = try prepare(self.db, "SELECT uidnext,uidvalidity FROM folders WHERE id=?");
         defer _ = c.sqlite3_finalize(s2);
         _ = c.sqlite3_bind_int64(s2, 1, folder_id);
         _ = c.sqlite3_step(s2);
@@ -197,9 +192,7 @@ pub const UserDb = struct {
         }
         _ = c.sqlite3_finalize(ins);
 
-        try bindExec(self.db,
-            "UPDATE folders SET uidnext=uidnext+1 WHERE id=?",
-            .{std.fmt.comptimePrint("{}", .{0})}); // workaround: use int bind below
+        try bindExec(self.db, "UPDATE folders SET uidnext=uidnext+1 WHERE id=?", .{std.fmt.comptimePrint("{}", .{0})}); // workaround: use int bind below
         const upd = try prepare(self.db, "UPDATE folders SET uidnext=uidnext+1 WHERE id=?");
         _ = c.sqlite3_bind_int64(upd, 1, folder_id);
         if (c.sqlite3_step(upd) != c.SQLITE_DONE) {
@@ -240,8 +233,7 @@ pub const UserDb = struct {
     }
 
     pub fn countMessages(self: *UserDb, folder_id: i64) !u32 {
-        const stmt = try prepare(self.db,
-            "SELECT COUNT(*) FROM messages WHERE folder_id=? AND deleted=0");
+        const stmt = try prepare(self.db, "SELECT COUNT(*) FROM messages WHERE folder_id=? AND deleted=0");
         defer _ = c.sqlite3_finalize(stmt);
         _ = c.sqlite3_bind_int64(stmt, 1, folder_id);
         _ = c.sqlite3_step(stmt);
@@ -266,16 +258,14 @@ pub const UserDb = struct {
 
     pub fn expunge(self: *UserDb, folder_id: i64) ![]u32 {
         // Return UIDs of deleted messages, then hard-delete them
-        const sel = try prepare(self.db,
-            "SELECT uid FROM messages WHERE folder_id=? AND deleted=1 ORDER BY uid");
+        const sel = try prepare(self.db, "SELECT uid FROM messages WHERE folder_id=? AND deleted=1 ORDER BY uid");
         defer _ = c.sqlite3_finalize(sel);
         _ = c.sqlite3_bind_int64(sel, 1, folder_id);
         var uids: std.ArrayList(u32) = .{ .items = &.{}, .capacity = 0 };
         while (c.sqlite3_step(sel) == c.SQLITE_ROW) {
             try uids.append(self.alloc, @intCast(c.sqlite3_column_int(sel, 0)));
         }
-        const del = try prepare(self.db,
-            "DELETE FROM messages WHERE folder_id=? AND deleted=1");
+        const del = try prepare(self.db, "DELETE FROM messages WHERE folder_id=? AND deleted=1");
         defer _ = c.sqlite3_finalize(del);
         _ = c.sqlite3_bind_int64(del, 1, folder_id);
         _ = c.sqlite3_step(del);
@@ -284,8 +274,7 @@ pub const UserDb = struct {
 
     // All UIDs in folder order (including \Deleted), used for EXPUNGE seq-num mapping
     pub fn listMessageUids(self: *UserDb, folder_id: i64) ![]u32 {
-        const stmt = try prepare(self.db,
-            "SELECT uid FROM messages WHERE folder_id=? ORDER BY uid");
+        const stmt = try prepare(self.db, "SELECT uid FROM messages WHERE folder_id=? ORDER BY uid");
         defer _ = c.sqlite3_finalize(stmt);
         _ = c.sqlite3_bind_int64(stmt, 1, folder_id);
         var uids: std.ArrayList(u32) = .{ .items = &.{}, .capacity = 0 };
@@ -296,8 +285,7 @@ pub const UserDb = struct {
     }
 
     pub fn totalMailboxSize(self: *UserDb) !i64 {
-        const stmt = try prepare(self.db,
-            "SELECT COALESCE(SUM(size), 0) FROM messages WHERE deleted=0");
+        const stmt = try prepare(self.db, "SELECT COALESCE(SUM(size), 0) FROM messages WHERE deleted=0");
         defer _ = c.sqlite3_finalize(stmt);
         _ = c.sqlite3_step(stmt);
         return c.sqlite3_column_int64(stmt, 0);
@@ -305,8 +293,7 @@ pub const UserDb = struct {
 
     // Simple text search across from/subject/body headers
     pub fn search(self: *UserDb, folder_id: i64, query: []const u8) ![]u32 {
-        const stmt = try prepare(self.db,
-            "SELECT uid FROM messages WHERE folder_id=? AND deleted=0 AND CAST(raw AS TEXT) LIKE ? ORDER BY uid");
+        const stmt = try prepare(self.db, "SELECT uid FROM messages WHERE folder_id=? AND deleted=0 AND CAST(raw AS TEXT) LIKE ? ORDER BY uid");
         defer _ = c.sqlite3_finalize(stmt);
         _ = c.sqlite3_bind_int64(stmt, 1, folder_id);
         const pattern = try std.fmt.allocPrint(self.alloc, "%{s}%", .{query});
@@ -345,11 +332,21 @@ fn messageFromRow(alloc: std.mem.Allocator, stmt: *c.sqlite3_stmt) !Message {
 }
 
 fn ensureInbox(db: *c.sqlite3) !void {
+    // Simple insert - the table should already exist from schema
     try exec(db, "INSERT OR IGNORE INTO folders (name) VALUES ('INBOX')");
 }
 
 fn exec(db: *c.sqlite3, sql: []const u8) !void {
-    if (c.sqlite3_exec(db, sql.ptr, null, null, null) != c.SQLITE_OK) return error.DbExec;
+    // Use a temporary buffer with null terminator
+    const buf = std.heap.c_allocator.allocSentinel(u8, sql.len, 0) catch return error.OutOfMemory;
+    defer std.heap.c_allocator.free(buf);
+    @memcpy(buf[0..sql.len], sql);
+    buf[sql.len] = 0;
+    if (c.sqlite3_exec(db, buf.ptr, null, null, null) != c.SQLITE_OK) {
+        const err_msg = c.sqlite3_errmsg(db);
+        std.log.err("exec failed: sql={s}, err={s}", .{ sql, std.mem.span(err_msg) });
+        return error.DbExec;
+    }
 }
 
 fn prepare(db: *c.sqlite3, sql: []const u8) !*c.sqlite3_stmt {
@@ -390,7 +387,7 @@ const schema =
     \\CREATE TABLE IF NOT EXISTS folders (
     \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
     \\  name TEXT NOT NULL UNIQUE,
-    \\  uidvalidity INTEGER NOT NULL DEFAULT (unixepoch()),
+    \\  uidvalidity INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     \\  uidnext INTEGER NOT NULL DEFAULT 1,
     \\  subscribed INTEGER NOT NULL DEFAULT 1
     \\);
@@ -404,7 +401,7 @@ const schema =
     \\  deleted INTEGER NOT NULL DEFAULT 0,
     \\  draft INTEGER NOT NULL DEFAULT 0,
     \\  recent INTEGER NOT NULL DEFAULT 1,
-    \\  internaldate INTEGER NOT NULL DEFAULT (unixepoch()),
+    \\  internaldate INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     \\  size INTEGER NOT NULL DEFAULT 0,
     \\  raw BLOB NOT NULL,
     \\  UNIQUE(folder_id, uid)
