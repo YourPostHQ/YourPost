@@ -376,6 +376,17 @@ fn handleConn(ctx: *ConnCtx) void {
     const method = line[0..method_end];
     const path = line[method_end + 1 .. method_end + 1 + path_end];
 
+    // CORS Preflight (handle before reading headers)
+    if (std.mem.eql(u8, method, "OPTIONS")) {
+        std.log.info("CORS preflight: {s}", .{path});
+        writeCorsPreflight(writer) catch |err| {
+            std.log.err("CORS preflight error: {}", .{err});
+            return;
+        };
+        return;
+    }
+
+
     var content_length: ?usize = null;
     var auth_header: ?[]const u8 = null;
     while (true) {
@@ -391,11 +402,6 @@ fn handleConn(ctx: *ConnCtx) void {
         }
     }
 
-    // ── CORS Preflight ───────────────────────────────────────────────────────
-    if (std.mem.eql(u8, method, "OPTIONS")) {
-        writeCorsPreflight(writer) catch return;
-        return;
-    }
 
     if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/health")) {
         writeJsonResponse(writer, 200, makeHealthBody()) catch return;
@@ -989,6 +995,7 @@ fn writeCorsPreflight(writer: anytype) !void {
     try writer.writeAll("Access-Control-Allow-Headers: Content-Type, Authorization\r\n");
     try writer.writeAll("Access-Control-Max-Age: 86400\r\n");
     try writer.writeAll("Connection: close\r\n\r\n");
+    try writer.flush();
 }
 
 fn writeNotFound(writer: anytype) !void {
