@@ -876,6 +876,13 @@ fn handleSystemCreateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, conte
         try writeJsonResponse(writer, 409, "{\"error\":\"user already exists\"}");
         return;
     };
+
+    // Create per-user mailbox database
+    ensureUserMailbox(ctx.deps.alloc, ctx.deps.data_dir, parsed.value.email) catch |err| {
+        std.log.err("Failed to create mailbox for {s}: {}", .{ parsed.value.email, err });
+        // Don't fail user creation - user can still use the system
+    };
+
     try writeJsonResponse(writer, 201, "{\"status\":\"created\"}");
 }
 
@@ -927,6 +934,13 @@ fn handleCreateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, content_len
         try writeJsonResponse(writer, 409, "{\"error\":\"user already exists\"}");
         return;
     };
+
+    // Create per-user mailbox database
+    ensureUserMailbox(ctx.deps.alloc, ctx.deps.data_dir, parsed.value.email) catch |err| {
+        std.log.err("Failed to create mailbox for {s}: {}", .{ parsed.value.email, err });
+        // Don't fail user creation - user can still use the system
+    };
+
     try writeJsonResponse(writer, 201, "{\"status\":\"created\"}");
 }
 
@@ -1135,6 +1149,20 @@ fn handleAuth(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?
     try writeJsonResponse(writer, 200, response_body);
 }
 
+// Helper: create the per-user mailbox database so it exists immediately after user creation
+fn ensureUserMailbox(alloc: std.mem.Allocator, data_dir: []const u8, email: []const u8) !void {
+    const db_path_str = try std.fmt.allocPrint(alloc, "{s}/mailboxes/{s}.db", .{ data_dir, email });
+    defer alloc.free(db_path_str);
+    const db_path = try alloc.dupeZ(u8, db_path_str);
+    defer alloc.free(db_path);
+    // This will create the file and initialize schema + INBOX folder
+    var udb = UserDb.open(alloc, db_path) catch |err| {
+        std.log.err("Failed to create mailbox for {s}: {}", .{ email, err });
+        return err;
+    };
+    udb.close();
+}
+
 // Handle domain owner registration (public endpoint)
 fn handleRegister(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize) !void {
     const alloc = ctx.deps.alloc;
@@ -1176,6 +1204,12 @@ fn handleRegister(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
     ctx.deps.global_db.createUser(parsed.value.email, parsed.value.password, "admin", parsed.value.domain) catch {
         try writeJsonResponse(writer, 409, "{\"error\":\"user already exists\"}");
         return;
+    };
+
+    // Create per-user mailbox database
+    ensureUserMailbox(ctx.deps.alloc, ctx.deps.data_dir, parsed.value.email) catch |err| {
+        std.log.err("Failed to create mailbox for {s}: {}", .{ parsed.value.email, err });
+        // Don't fail registration - user can still use the system
     };
 
     const exp = c.time(null) + 86400;

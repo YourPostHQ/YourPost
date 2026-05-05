@@ -1,6 +1,7 @@
 const std = @import("std");
 const config = @import("config.zig");
 const GlobalDb = @import("db/global.zig").GlobalDb;
+const user_db = @import("db/user.zig");
 const smtp = @import("smtp/server.zig");
 const pop3 = @import("pop3/server.zig");
 const imap = @import("imap/server.zig");
@@ -141,6 +142,24 @@ pub fn main(init: std.process.Init) !void {
             return err;
         };
         std.log.info("System user {s} created successfully", .{email});
+
+        // Create per-user mailbox database
+        const db_path_str = std.fmt.allocPrint(alloc, "{s}/mailboxes/{s}.db", .{ cfg.data_dir, email }) catch |err| {
+            std.log.err("Failed to allocate path for mailbox: {}", .{err});
+            return;
+        };
+        defer alloc.free(db_path_str);
+        const db_path = alloc.dupeZ(u8, db_path_str) catch |err| {
+            std.log.err("Failed to allocate Z string for mailbox path: {}", .{err});
+            return;
+        };
+        defer alloc.free(db_path);
+        var udb = user_db.UserDb.open(alloc, db_path) catch |err| {
+            std.log.err("Failed to create mailbox for {s}: {}", .{ email, err });
+            return;
+        };
+        udb.close();
+        std.log.info("Mailbox database created for {s}", .{email});
         return;
     }
 
