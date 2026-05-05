@@ -22,6 +22,7 @@ pub const Deps = struct {
 const JwtClaims = struct {
     email: []const u8,
     role: []const u8,
+    domain: []const u8,
 };
 
 const base64url = std.base64.Base64Encoder.init(std.base64.url_safe_alphabet_chars, null);
@@ -52,13 +53,35 @@ fn base64urlDecode(alloc: std.mem.Allocator, encoded: []const u8) ![]u8 {
     return decoded;
 }
 
-fn signJwt(alloc: std.mem.Allocator, email: []const u8, role: []const u8, secret: []const u8, exp: i64) ![]u8 {
+fn percentDecode(alloc: std.mem.Allocator, input: []const u8) ![]u8 {
+    var out = try alloc.alloc(u8, input.len);
+    var wi: usize = 0;
+    var i: usize = 0;
+    while (i < input.len) {
+        if (input[i] == '%' and i + 2 < input.len) {
+            const hi = std.fmt.charToDigit(input[i + 1], 16) catch null;
+            const lo = std.fmt.charToDigit(input[i + 2], 16) catch null;
+            if (hi != null and lo != null) {
+                out[wi] = (hi.? << 4) | lo.?;
+                wi += 1;
+                i += 3;
+                continue;
+            }
+        }
+        out[wi] = input[i];
+        wi += 1;
+        i += 1;
+    }
+    return out[0..wi];
+}
+
+fn signJwt(alloc: std.mem.Allocator, email: []const u8, role: []const u8, domain: []const u8, secret: []const u8, exp: i64) ![]u8 {
     const header_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
     const header_enc = try base64urlEncode(alloc, header_json);
     defer alloc.free(header_enc);
 
     const payload_json = try std.fmt.allocPrint(alloc,
-        "{{\"email\":\"{s}\",\"role\":\"{s}\",\"exp\":{d}}}", .{ email, role, exp });
+        "{{\"email\":\"{s}\",\"role\":\"{s}\",\"domain\":\"{s}\",\"exp\":{d}}}", .{ email, role, domain, exp });
     defer alloc.free(payload_json);
     const payload_enc = try base64urlEncode(alloc, payload_json);
     defer alloc.free(payload_enc);
@@ -102,13 +125,16 @@ fn verifyJwt(alloc: std.mem.Allocator, token: []const u8, secret: []const u8) !J
     const payload_json = try base64urlDecode(alloc, parts[1]);
     defer alloc.free(payload_json);
 
-    // Parse email and role from payload JSON (simple extraction, no full JSON parser needed)
+    // Parse claims from payload JSON (simple extraction, no full JSON parser needed)
     const email = extractJsonString(alloc, payload_json, "email") orelse return error.MissingClaims;
     errdefer alloc.free(email);
     const role = extractJsonString(alloc, payload_json, "role") orelse {
         alloc.free(email);
         return error.MissingClaims;
     };
+    errdefer alloc.free(role);
+    const domain = extractJsonString(alloc, payload_json, "domain") orelse
+        try alloc.dupe(u8, "");
 
     // Check expiry
     if (extractJsonInt(payload_json, "exp")) |exp| {
@@ -116,11 +142,12 @@ fn verifyJwt(alloc: std.mem.Allocator, token: []const u8, secret: []const u8) !J
         if (now > exp) {
             alloc.free(email);
             alloc.free(role);
+            alloc.free(domain);
             return error.TokenExpired;
         }
     }
 
-    return .{ .email = email, .role = role };
+    return .{ .email = email, .role = role, .domain = domain };
 }
 
 fn extractJsonString(alloc: std.mem.Allocator, json: []const u8, key: []const u8) ?[]u8 {
@@ -396,34 +423,77 @@ fn handleConn(ctx: *ConnCtx) void {
         defer {
             ctx.deps.alloc.free(c_claims.email);
             ctx.deps.alloc.free(c_claims.role);
+            ctx.deps.alloc.free(c_claims.domain);
         }
         const is_admin = std.mem.eql(u8, c_claims.role, "admin");
+        const is_system = std.mem.eql(u8, c_claims.role, "system");
+        const can_admin = is_admin or is_system;
 
-        // ── Admin layer: /api/v1/admin/* ─────────────────────────────────────
-        if (std.mem.startsWith(u8, path, "/api/v1/admin/")) {
-            if (!is_admin) {
+        // ── System layer: /api/v1/system/* (system role only) ─────────────────
+        if (std.mem.startsWith(u8, path, "/api/v1/system/")) {
+            if (!is_system) {
                 writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
                 return;
             }
-            // path[14..] strips "/api/v1/admin" keeping the leading slash → "/users", "/users/{email}"
+            const sys_path = path[14..];
+
+            if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, sys_path, "/users")) {
+                handleSystemListUsers(writer, ctx) catch return;
+                return;
+            }
+            if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, sys_path, "/users")) {
+                handleSystemCreateUser(writer, ctx, reader, content_length) catch return;
+                return;
+            }
+            if (std.mem.eql(u8, method, "PUT") and std.mem.startsWith(u8, sys_path, "/users/")) {
+                const raw_email = sys_path[7..];
+                const target_email = percentDecode(ctx.deps.alloc, raw_email) catch raw_email;
+                defer if (target_email.ptr != raw_email.ptr) ctx.deps.alloc.free(target_email);
+                handleUpdateUser(writer, ctx, reader, content_length, target_email, null) catch return;
+                return;
+            }
+            if (std.mem.eql(u8, method, "DELETE") and std.mem.startsWith(u8, sys_path, "/users/")) {
+                const raw_email = sys_path[7..];
+                const target_email = percentDecode(ctx.deps.alloc, raw_email) catch raw_email;
+                defer if (target_email.ptr != raw_email.ptr) ctx.deps.alloc.free(target_email);
+                handleDeactivateUser(writer, ctx, target_email, null) catch return;
+                return;
+            }
+            if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, sys_path, "/domains")) {
+                handleSystemListDomains(writer, ctx) catch return;
+                return;
+            }
+            writeNotFound(writer) catch return;
+            return;
+        }
+
+        // ── Admin layer: /api/v1/admin/* (admin or system) ───────────────────
+        if (std.mem.startsWith(u8, path, "/api/v1/admin/")) {
+            if (!can_admin) {
+                writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
+                return;
+            }
+            // path[13..] keeps the leading slash → "/users", "/users/{email}"
             const admin_path = path[13..];
+            // system has no domain restriction; admin is scoped to their domain
+            const caller_domain: ?[]const u8 = if (is_system) null else c_claims.domain;
 
             if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, admin_path, "/users")) {
-                handleListUsers(writer, ctx) catch return;
+                handleListUsers(writer, ctx, caller_domain) catch return;
                 return;
             }
             if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, admin_path, "/users")) {
-                handleCreateUser(writer, ctx, reader, content_length) catch return;
+                handleCreateUser(writer, ctx, reader, content_length, caller_domain) catch return;
                 return;
             }
             if (std.mem.eql(u8, method, "PUT") and std.mem.startsWith(u8, admin_path, "/users/")) {
-                const email = admin_path[7..];
-                handleUpdateUser(writer, ctx, reader, content_length, email) catch return;
+                const target_email = admin_path[7..];
+                handleUpdateUser(writer, ctx, reader, content_length, target_email, caller_domain) catch return;
                 return;
             }
             if (std.mem.eql(u8, method, "DELETE") and std.mem.startsWith(u8, admin_path, "/users/")) {
-                const email = admin_path[7..];
-                handleDeactivateUser(writer, ctx, email) catch return;
+                const target_email = admin_path[7..];
+                handleDeactivateUser(writer, ctx, target_email, caller_domain) catch return;
                 return;
             }
             writeNotFound(writer) catch return;
@@ -432,14 +502,17 @@ fn handleConn(ctx: *ConnCtx) void {
 
         // ── User layer: /api/v1/mailboxes/{user}/* ────────────────────────────
         if (std.mem.startsWith(u8, path, "/api/v1/mailboxes/")) {
+            // Decode percent-encoded characters (e.g. %40 → @) so email comparison works
+            const dpath = percentDecode(ctx.deps.alloc, path) catch path;
+            defer if (dpath.ptr != path.ptr) ctx.deps.alloc.free(dpath);
             // api_path strips "/api/v1" keeping leading slash → "/mailboxes/..."
-            const api_path = path[7..];
+            const api_path = dpath[7..];
 
             if (std.mem.eql(u8, method, "GET")) {
                 // GET /api/v1/mailboxes/{user}/folders
                 if (std.mem.startsWith(u8, api_path, "/mailboxes/") and endsWith(api_path, "/folders")) {
                     const user = api_path[12 .. api_path.len - 8];
-                    if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                    if (!is_system and !is_admin and !std.mem.eql(u8, c_claims.email, user)) {
                         writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
                         return;
                     }
@@ -451,7 +524,7 @@ fn handleConn(ctx: *ConnCtx) void {
                     const pattern = "/messages/";
                     if (std.mem.indexOf(u8, api_path, pattern)) |msg_pos| {
                         const user = api_path[12..msg_pos];
-                        if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                        if (!is_system and !is_admin and !std.mem.eql(u8, c_claims.email, user)) {
                             writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
                             return;
                         }
@@ -468,14 +541,14 @@ fn handleConn(ctx: *ConnCtx) void {
                 if (std.mem.startsWith(u8, api_path, "/mailboxes/") and std.mem.indexOf(u8, api_path, "/messages") != null) {
                     const user_end = std.mem.indexOf(u8, api_path, "/messages") orelse return;
                     const user = api_path[12..user_end];
-                    if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                    if (!is_system and !is_admin and !std.mem.eql(u8, c_claims.email, user)) {
                         writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
                         return;
                     }
-                    const folder = if (std.mem.indexOf(u8, path, "folder=")) |pos| blk: {
+                    const folder = if (std.mem.indexOf(u8, dpath, "folder=")) |pos| blk: {
                         const start = pos + 7;
-                        const end = if (std.mem.indexOfPos(u8, path, start, "&")) |e| e else path.len;
-                        break :blk path[start..end];
+                        const end = if (std.mem.indexOfPos(u8, dpath, start, "&")) |e| e else dpath.len;
+                        break :blk dpath[start..end];
                     } else "INBOX";
                     handleListMessages(writer, ctx, user, folder) catch return;
                     return;
@@ -486,7 +559,7 @@ fn handleConn(ctx: *ConnCtx) void {
                 // POST /api/v1/mailboxes/{user}/send
                 if (std.mem.startsWith(u8, api_path, "/mailboxes/") and std.mem.endsWith(u8, api_path, "/send")) {
                     const user = api_path[12 .. api_path.len - 5];
-                    if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                    if (!is_system and !is_admin and !std.mem.eql(u8, c_claims.email, user)) {
                         writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
                         return;
                     }
@@ -501,7 +574,7 @@ fn handleConn(ctx: *ConnCtx) void {
                     const pattern = "/messages/";
                     if (std.mem.indexOf(u8, api_path, pattern)) |msg_pos| {
                         const user = api_path[12..msg_pos];
-                        if (!is_admin and !std.mem.eql(u8, c_claims.email, user)) {
+                        if (!is_system and !is_admin and !std.mem.eql(u8, c_claims.email, user)) {
                             writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}") catch return;
                             return;
                         }
@@ -669,13 +742,17 @@ fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
     std.log.info("Email delivered successfully to {s}", .{username});
 }
 
-fn handleListUsers(writer: anytype, ctx: *ConnCtx) !void {
+fn handleListUsers(writer: anytype, ctx: *ConnCtx, caller_domain: ?[]const u8) !void {
     const alloc = ctx.deps.alloc;
-    const users = try ctx.deps.global_db.listUsers();
+    const users = if (caller_domain) |d|
+        try ctx.deps.global_db.listUsersByDomain(d)
+    else
+        try ctx.deps.global_db.listUsers();
     defer {
         for (users) |u| {
             alloc.free(u.email);
             alloc.free(u.role);
+            alloc.free(u.domain);
         }
         alloc.free(users);
     }
@@ -684,9 +761,9 @@ fn handleListUsers(writer: anytype, ctx: *ConnCtx) !void {
     try buf.appendSlice(alloc, "{\"users\":[");
     for (users, 0..) |u, i| {
         if (i > 0) try buf.append(alloc, ',');
-        const item = try std.fmt.allocPrint(alloc, "{{\"email\":\"{s}\",\"role\":\"{s}\",\"active\":{s},\"quota_bytes\":{d}}}", .{
-            u.email,
-            u.role,
+        const item = try std.fmt.allocPrint(alloc,
+            "{{\"email\":\"{s}\",\"role\":\"{s}\",\"domain\":\"{s}\",\"active\":{s},\"quota_bytes\":{d}}}", .{
+            u.email, u.role, u.domain,
             if (u.active) "true" else "false",
             u.quota_bytes,
         });
@@ -697,7 +774,32 @@ fn handleListUsers(writer: anytype, ctx: *ConnCtx) !void {
     try writeJsonResponse(writer, 200, buf.items);
 }
 
-fn handleCreateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize) !void {
+fn handleSystemListUsers(writer: anytype, ctx: *ConnCtx) !void {
+    try handleListUsers(writer, ctx, null);
+}
+
+fn handleSystemListDomains(writer: anytype, ctx: *ConnCtx) !void {
+    const alloc = ctx.deps.alloc;
+    const domains = try ctx.deps.global_db.listDomains();
+    defer {
+        for (domains) |d| alloc.free(d.domain);
+        alloc.free(domains);
+    }
+    var buf = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"domains\":[");
+    for (domains, 0..) |d, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        const item = try std.fmt.allocPrint(alloc,
+            "{{\"domain\":\"{s}\",\"created_at\":{d}}}", .{ d.domain, d.created_at });
+        defer alloc.free(item);
+        try buf.appendSlice(alloc, item);
+    }
+    try buf.appendSlice(alloc, "]}");
+    try writeJsonResponse(writer, 200, buf.items);
+}
+
+fn handleSystemCreateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize) !void {
     const alloc = ctx.deps.alloc;
     const body_size = content_length orelse 4096;
     if (body_size > 1024 * 1024) {
@@ -714,21 +816,29 @@ fn handleCreateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, content_len
         if (n == 0) break;
         bytes_read += n;
     }
-    const CreateUserReq = struct { email: []const u8, password: []const u8, role: ?[]const u8 };
-    const parsed = std.json.parseFromSlice(CreateUserReq, alloc, body[0..bytes_read], .{}) catch {
+    const Req = struct { email: []const u8, password: []const u8, role: []const u8 = "user", domain: []const u8 = "" };
+    const parsed = std.json.parseFromSlice(Req, alloc, body[0..bytes_read], .{ .ignore_unknown_fields = true }) catch {
         try writeJsonResponse(writer, 400, "{\"error\":\"invalid json\"}");
         return;
     };
     defer parsed.deinit();
-    const role = if (parsed.value.role) |r| r else "user";
-    ctx.deps.global_db.createUser(parsed.value.email, parsed.value.password, role) catch {
+    const role = parsed.value.role;
+    // Derive domain from email if not provided
+    const domain = if (parsed.value.domain.len > 0) parsed.value.domain else blk: {
+        if (std.mem.indexOf(u8, parsed.value.email, "@")) |at|
+            break :blk parsed.value.email[at + 1 ..]
+        else
+            break :blk "";
+    };
+    ctx.deps.global_db.addDomain(domain) catch {};
+    ctx.deps.global_db.createUser(parsed.value.email, parsed.value.password, role, domain) catch {
         try writeJsonResponse(writer, 409, "{\"error\":\"user already exists\"}");
         return;
     };
     try writeJsonResponse(writer, 201, "{\"status\":\"created\"}");
 }
 
-fn handleUpdateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize, email: []const u8) !void {
+fn handleCreateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize, caller_domain: ?[]const u8) !void {
     const alloc = ctx.deps.alloc;
     const body_size = content_length orelse 4096;
     if (body_size > 1024 * 1024) {
@@ -745,20 +855,102 @@ fn handleUpdateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, content_len
         if (n == 0) break;
         bytes_read += n;
     }
-    const UpdateReq = struct { role: ?[]const u8, quota_bytes: ?i64, active: ?bool };
+    const CreateUserReq = struct { email: []const u8, password: []const u8 };
+    const parsed = std.json.parseFromSlice(CreateUserReq, alloc, body[0..bytes_read], .{}) catch {
+        try writeJsonResponse(writer, 400, "{\"error\":\"invalid json\"}");
+        return;
+    };
+    defer parsed.deinit();
+
+    // Domain admin can only create users in their own domain
+    if (caller_domain) |d| {
+        const at = std.mem.indexOf(u8, parsed.value.email, "@") orelse {
+            try writeJsonResponse(writer, 400, "{\"error\":\"invalid email\"}");
+            return;
+        };
+        const email_domain = parsed.value.email[at + 1 ..];
+        if (!std.mem.eql(u8, email_domain, d)) {
+            try writeJsonResponse(writer, 403, "{\"error\":\"email must belong to your domain\"}");
+            return;
+        }
+    }
+
+    const domain = if (caller_domain) |d| d else blk: {
+        if (std.mem.indexOf(u8, parsed.value.email, "@")) |at|
+            break :blk parsed.value.email[at + 1 ..]
+        else
+            break :blk "";
+    };
+
+    ctx.deps.global_db.createUser(parsed.value.email, parsed.value.password, "user", domain) catch {
+        try writeJsonResponse(writer, 409, "{\"error\":\"user already exists\"}");
+        return;
+    };
+    try writeJsonResponse(writer, 201, "{\"status\":\"created\"}");
+}
+
+fn handleUpdateUser(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize, email: []const u8, caller_domain: ?[]const u8) !void {
+    const alloc = ctx.deps.alloc;
+
+    // Domain-scoped: verify target email belongs to caller's domain
+    if (caller_domain) |d| {
+        const at = std.mem.indexOf(u8, email, "@") orelse {
+            try writeJsonResponse(writer, 400, "{\"error\":\"invalid email\"}");
+            return;
+        };
+        if (!std.mem.eql(u8, email[at + 1 ..], d)) {
+            try writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}");
+            return;
+        }
+    }
+
+    const body_size = content_length orelse 4096;
+    if (body_size > 1024 * 1024) {
+        try writer.print("HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n", .{});
+        return;
+    }
+    const body = try alloc.alloc(u8, body_size);
+    defer alloc.free(body);
+    var bytes_read: usize = 0;
+    while (bytes_read < body_size) {
+        const slice: []u8 = body[bytes_read..];
+        var slices: [1][]u8 = .{slice};
+        const n = reader.readVec(&slices) catch break;
+        if (n == 0) break;
+        bytes_read += n;
+    }
+    // Domain admins can only change quota and active status, not role
+    const UpdateReq = struct { quota_bytes: ?i64, active: ?bool };
     const parsed = std.json.parseFromSlice(UpdateReq, alloc, body[0..bytes_read], .{}) catch {
         try writeJsonResponse(writer, 400, "{\"error\":\"invalid json\"}");
         return;
     };
     defer parsed.deinit();
-    ctx.deps.global_db.updateUser(email, parsed.value.role, parsed.value.quota_bytes, parsed.value.active) catch {
+    ctx.deps.global_db.updateUser(email, null, parsed.value.quota_bytes, parsed.value.active) catch {
         try writeJsonResponse(writer, 500, "{\"error\":\"internal error\"}");
         return;
     };
     try writeJsonResponse(writer, 200, "{\"status\":\"updated\"}");
 }
 
-fn handleDeactivateUser(writer: anytype, ctx: *ConnCtx, email: []const u8) !void {
+fn handleDeactivateUser(writer: anytype, ctx: *ConnCtx, email: []const u8, caller_domain: ?[]const u8) !void {
+    if (caller_domain) |d| {
+        const at = std.mem.indexOf(u8, email, "@") orelse {
+            try writeJsonResponse(writer, 400, "{\"error\":\"invalid email\"}");
+            return;
+        };
+        if (!std.mem.eql(u8, email[at + 1 ..], d)) {
+            try writeJsonResponse(writer, 403, "{\"error\":\"forbidden\"}");
+            return;
+        }
+    }
+    if (ctx.deps.global_db.getUserRole(email)) |role| {
+        defer ctx.deps.alloc.free(role);
+        if (std.mem.eql(u8, role, "system")) {
+            try writeJsonResponse(writer, 403, "{\"error\":\"cannot deactivate system users\"}");
+            return;
+        }
+    } else |_| {}
     ctx.deps.global_db.deactivateUser(email) catch {
         try writeJsonResponse(writer, 500, "{\"error\":\"internal error\"}");
         return;
@@ -877,11 +1069,13 @@ fn handleAuth(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?
     }
     const role = ctx.deps.global_db.getUserRole(parsed.value.email) catch "user";
     defer alloc.free(role);
+    const domain = ctx.deps.global_db.getUserDomain(parsed.value.email) catch try alloc.dupe(u8, "");
+    defer alloc.free(domain);
     const exp = c.time(null) + 86400; // 24h
-    const jwt = try signJwt(alloc, parsed.value.email, role, ctx.deps.jwt_secret, exp);
+    const jwt = try signJwt(alloc, parsed.value.email, role, domain, ctx.deps.jwt_secret, exp);
     defer alloc.free(jwt);
     const response_body = try std.fmt.allocPrint(alloc,
-        "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"{s}\"}}", .{ jwt, parsed.value.email, role });
+        "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"{s}\",\"domain\":\"{s}\"}}", .{ jwt, parsed.value.email, role, domain });
     defer alloc.free(response_body);
     try writeJsonResponse(writer, 200, response_body);
 }
@@ -904,35 +1098,36 @@ fn handleRegister(writer: anytype, ctx: *ConnCtx, reader: anytype, content_lengt
         if (n == 0) break;
         bytes_read += n;
     }
-    const RegisterReq = struct { email: []const u8, password: []const u8, domain: ?[]const u8 };
+    const RegisterReq = struct { email: []const u8, password: []const u8, domain: []const u8 };
     const parsed = std.json.parseFromSlice(RegisterReq, alloc, body[0..bytes_read], .{}) catch {
-        try writeJsonResponse(writer, 400, "{\"error\":\"invalid json\"}");
+        try writeJsonResponse(writer, 400, "{\"error\":\"domain, email, and password are required\"}");
         return;
     };
     defer parsed.deinit();
 
-    // Check if this is the first user (becomes admin)
-    const is_first_user = ctx.deps.global_db.getUserCount() == 0;
-    const role: []const u8 = if (is_first_user) "admin" else "user";
-
-    // If not first user, require a valid registration token or admin approval
-    if (!is_first_user) {
-        // For now, only allow admin to create users via /api/v1/admin/users
-        try writeJsonResponse(writer, 403, "{\"error\":\"registration closed - contact admin\"}");
+    // Validate that email belongs to the registered domain
+    const at = std.mem.indexOf(u8, parsed.value.email, "@") orelse {
+        try writeJsonResponse(writer, 400, "{\"error\":\"invalid email\"}");
+        return;
+    };
+    const email_domain = parsed.value.email[at + 1 ..];
+    if (!std.mem.eql(u8, email_domain, parsed.value.domain)) {
+        try writeJsonResponse(writer, 400, "{\"error\":\"email must belong to the registered domain\"}");
         return;
     }
 
-    ctx.deps.global_db.createUser(parsed.value.email, parsed.value.password, role) catch {
+    // Register domain and create domain admin
+    ctx.deps.global_db.addDomain(parsed.value.domain) catch {};
+    ctx.deps.global_db.createUser(parsed.value.email, parsed.value.password, "admin", parsed.value.domain) catch {
         try writeJsonResponse(writer, 409, "{\"error\":\"user already exists\"}");
         return;
     };
 
-    // Auto-login after registration
-    const exp = c.time(null) + 86400; // 24h
-    const jwt = try signJwt(alloc, parsed.value.email, role, ctx.deps.jwt_secret, exp);
+    const exp = c.time(null) + 86400;
+    const jwt = try signJwt(alloc, parsed.value.email, "admin", parsed.value.domain, ctx.deps.jwt_secret, exp);
     defer alloc.free(jwt);
     const response_body = try std.fmt.allocPrint(alloc,
-        "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"{s}\"}}", .{ jwt, parsed.value.email, role });
+        "{{\"token\":\"{s}\",\"email\":\"{s}\",\"role\":\"admin\",\"domain\":\"{s}\"}}", .{ jwt, parsed.value.email, parsed.value.domain });
     defer alloc.free(response_body);
     try writeJsonResponse(writer, 201, response_body);
 }
