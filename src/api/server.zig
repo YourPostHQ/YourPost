@@ -418,6 +418,28 @@ fn handleConn(ctx: *ConnCtx) void {
         return;
     }
 
+    // ── Service API: /api/service/* (for email worker and internal services) ──
+    if (std.mem.startsWith(u8, path, "/api/service/")) {
+        if (ctx.deps.service_token) |key| {
+            const expected = std.fmt.allocPrint(ctx.deps.alloc, "Bearer {s}", .{key}) catch return;
+            defer ctx.deps.alloc.free(expected);
+            if (auth_header == null or !std.mem.eql(u8, auth_header.?, expected)) {
+                std.log.warn("Unauthorized service API request to {s}", .{path});
+                writer.print("HTTP/1.1 401 Unauthorized\r\n", .{}) catch return;
+                writer.writeAll("Content-Length: 0\r\n\r\n") catch return;
+                return;
+            }
+        }
+        // path is like "/api/service/incoming", skip "/api/service" (12 chars) to get "/incoming"
+        const service_path = path[12..];
+        if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, service_path, "/incoming")) {
+            handleIncoming(writer, ctx, reader, content_length) catch return;
+            return;
+        }
+        writeNotFound(writer) catch return;
+        return;
+    }
+
     // All other /api/v1/* require a valid JWT — extract and verify once.
     if (std.mem.startsWith(u8, path, "/api/v1/")) {
         const bearer_prefix = "Bearer ";
@@ -617,14 +639,6 @@ fn handleConn(ctx: *ConnCtx) void {
 
 fn handleIncoming(writer: anytype, ctx: *ConnCtx, reader: anytype, content_length: ?usize) !void {
     const alloc = ctx.deps.alloc;
-    std.log.info("handleIncoming called, content_length={?}", .{content_length});
-    errdefer |err| {
-        std.log.err("handleIncoming failed with: {}", .{err});
-        writer.print("HTTP/1.1 500 Internal Server Error\r\n", .{}) catch {};
-        writer.writeAll("Content-Type: application/json\r\n") catch {};
-        writer.print("Content-Length: 100\r\n\r\n", .{}) catch {};
-        writer.print("{{\"error\":\"internal error: {s}\"}}", .{@errorName(err)}) catch {};
-    }
 
     // Read body based on Content-Length, or read until connection closes
     const body_size = content_length orelse 64 * 1024; // Default 64KB if no Content-Length

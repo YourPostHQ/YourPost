@@ -337,16 +337,11 @@ fn ensureInbox(db: *c.sqlite3) !void {
 }
 
 fn exec(db: *c.sqlite3, sql: []const u8) !void {
-    // Use a temporary buffer with null terminator
-    const buf = std.heap.c_allocator.allocSentinel(u8, sql.len, 0) catch return error.OutOfMemory;
-    defer std.heap.c_allocator.free(buf);
-    @memcpy(buf[0..sql.len], sql);
-    buf[sql.len] = 0;
-    if (c.sqlite3_exec(db, buf.ptr, null, null, null) != c.SQLITE_OK) {
-        const err_msg = c.sqlite3_errmsg(db);
-        std.log.err("exec failed: sql={s}, err={s}", .{ sql, std.mem.span(err_msg) });
-        return error.DbExec;
-    }
+    const alloc = std.heap.c_allocator;
+    const sql_z = alloc.allocSentinel(u8, sql.len, 0) catch return error.OutOfMemory;
+    defer alloc.free(sql_z);
+    @memcpy(sql_z, sql);
+    if (c.sqlite3_exec(db, sql_z.ptr, null, null, null) != c.SQLITE_OK) return error.DbExec;
 }
 
 fn prepare(db: *c.sqlite3, sql: []const u8) !*c.sqlite3_stmt {
