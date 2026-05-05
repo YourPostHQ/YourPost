@@ -20,6 +20,8 @@ fn signalHandler(sig: std.posix.SIG) callconv(.c) void {
 const Args = struct {
     daemon: bool = false,
     pid_file: ?[]const u8 = null,
+    bootstrap_email: ?[]const u8 = null,
+    bootstrap_password: ?[]const u8 = null,
 };
 
 fn parseArgs(alloc: std.mem.Allocator, proc_args: std.process.Args) !Args {
@@ -38,6 +40,19 @@ fn parseArgs(alloc: std.mem.Allocator, proc_args: std.process.Args) !Args {
                 std.log.err("Missing argument for --pid-file", .{});
                 return error.InvalidArgs;
             }
+        } else if (std.mem.eql(u8, arg, "--bootstrap")) {
+            if (iter.next()) |email_arg| {
+                args.bootstrap_email = email_arg;
+            } else {
+                std.log.err("--bootstrap requires: --bootstrap <email> <password>", .{});
+                return error.InvalidArgs;
+            }
+            if (iter.next()) |pass_arg| {
+                args.bootstrap_password = pass_arg;
+            } else {
+                std.log.err("--bootstrap requires: --bootstrap <email> <password>", .{});
+                return error.InvalidArgs;
+            }
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             printUsage();
             std.process.exit(0);
@@ -53,9 +68,10 @@ fn printUsage() void {
     const usage =
         \\Usage: yourpost [options]
         \\Options:
-        \\  --daemon, -d       Run as a daemon (background process)
-        \\  --pid-file <path>  Write PID to specified file
-        \\  --help, -h          Show this help message
+        \\  --daemon, -d                   Run as a daemon (background process)
+        \\  --pid-file <path>              Write PID to specified file
+        \\  --bootstrap <email> <password> Create the initial system user and exit
+        \\  --help, -h                     Show this help message
         \\
         \\Environment variables are used for configuration.
         \\See README.md for details.
@@ -106,6 +122,27 @@ pub fn main(init: std.process.Init) !void {
     defer alloc.free(global_db_path);
     var global_db = try GlobalDb.open(alloc, init.io, global_db_path);
     defer global_db.close();
+
+    // Bootstrap: create the initial system user then exit
+    if (args.bootstrap_email) |email| {
+        const password = args.bootstrap_password.?;
+        const at = std.mem.indexOf(u8, email, "@") orelse {
+            std.log.err("Bootstrap email must be a valid address", .{});
+            return error.InvalidArgs;
+        };
+        const domain = email[at + 1 ..];
+        global_db.addDomain(domain) catch {};
+        global_db.createUser(email, password, "system", domain) catch |err| {
+            if (err == error.UserAlreadyExists) {
+                std.log.err("System user {s} already exists", .{email});
+            } else {
+                std.log.err("Failed to create system user: {}", .{err});
+            }
+            return err;
+        };
+        std.log.info("System user {s} created successfully", .{email});
+        return;
+    }
 
     std.log.info("Startup validation complete.", .{});
 

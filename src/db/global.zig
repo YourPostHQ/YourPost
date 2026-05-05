@@ -29,6 +29,9 @@ pub const GlobalDb = struct {
         if (!hasColumn(db, "users", "role")) {
             try exec(db, "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
         }
+        if (!hasColumn(db, "users", "domain")) {
+            try exec(db, "ALTER TABLE users ADD COLUMN domain TEXT NOT NULL DEFAULT ''");
+        }
         return .{ .db = db, .alloc = alloc, .io = io };
     }
 
@@ -59,7 +62,7 @@ pub const GlobalDb = struct {
         return c.sqlite3_step(stmt) == c.SQLITE_ROW;
     }
 
-    pub fn createUser(self: *GlobalDb, email: []const u8, password: []const u8, role: []const u8) !void {
+    pub fn createUser(self: *GlobalDb, email: []const u8, password: []const u8, role: []const u8, domain: []const u8) !void {
         var hash_buf: [256]u8 = undefined;
         const stored = try argon2.strHash(password, .{
             .allocator = self.alloc,
@@ -67,8 +70,8 @@ pub const GlobalDb = struct {
             .mode = .argon2id,
         }, &hash_buf, self.io);
         bindExec(self.db,
-            "INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)",
-            .{ email, stored, role }) catch |err| {
+            "INSERT INTO users (email, password_hash, role, domain) VALUES (?, ?, ?, ?)",
+            .{ email, stored, role, domain }) catch |err| {
             std.log.err("createUser error: {}", .{err});
             return error.UserAlreadyExists;
         };
@@ -116,21 +119,44 @@ pub const GlobalDb = struct {
         try bindExec(self.db, "UPDATE users SET active=0 WHERE email=?", .{email});
     }
 
-    pub const UserInfo = struct { email: []u8, role: []u8, active: bool, quota_bytes: i64 };
+    pub const UserInfo = struct { email: []u8, role: []u8, domain: []u8, active: bool, quota_bytes: i64 };
 
     pub fn listUsers(self: *GlobalDb) ![]UserInfo {
         const stmt = try prepare(self.db,
-            "SELECT email, role, active, quota_bytes FROM users ORDER BY email");
+            "SELECT email, role, domain, active, quota_bytes FROM users ORDER BY domain, email");
         defer _ = c.sqlite3_finalize(stmt);
         var list: std.ArrayList(UserInfo) = .{ .items = &.{}, .capacity = 0 };
         while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
             const email = try self.alloc.dupe(u8, columnText(stmt, 0));
             const role = try self.alloc.dupe(u8, columnText(stmt, 1));
+            const domain = try self.alloc.dupe(u8, columnText(stmt, 2));
             try list.append(self.alloc, .{
                 .email = email,
                 .role = role,
-                .active = c.sqlite3_column_int(stmt, 2) != 0,
-                .quota_bytes = c.sqlite3_column_int64(stmt, 3),
+                .domain = domain,
+                .active = c.sqlite3_column_int(stmt, 3) != 0,
+                .quota_bytes = c.sqlite3_column_int64(stmt, 4),
+            });
+        }
+        return list.toOwnedSlice(self.alloc);
+    }
+
+    pub fn listUsersByDomain(self: *GlobalDb, domain: []const u8) ![]UserInfo {
+        const stmt = try prepare(self.db,
+            "SELECT email, role, domain, active, quota_bytes FROM users WHERE domain=? ORDER BY email");
+        defer _ = c.sqlite3_finalize(stmt);
+        bindText(stmt, 1, domain);
+        var list: std.ArrayList(UserInfo) = .{ .items = &.{}, .capacity = 0 };
+        while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+            const email = try self.alloc.dupe(u8, columnText(stmt, 0));
+            const role = try self.alloc.dupe(u8, columnText(stmt, 1));
+            const d = try self.alloc.dupe(u8, columnText(stmt, 2));
+            try list.append(self.alloc, .{
+                .email = email,
+                .role = role,
+                .domain = d,
+                .active = c.sqlite3_column_int(stmt, 3) != 0,
+                .quota_bytes = c.sqlite3_column_int64(stmt, 4),
             });
         }
         return list.toOwnedSlice(self.alloc);
@@ -138,6 +164,29 @@ pub const GlobalDb = struct {
 
     pub fn getUserRole(self: *GlobalDb, email: []const u8) ![]const u8 {
         const stmt = try prepare(self.db, "SELECT role FROM users WHERE email=? AND active=1");
+        defer _ = c.sqlite3_finalize(stmt);
+        bindText(stmt, 1, email);
+        if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return error.UserNotFound;
+        return self.alloc.dupe(u8, columnText(stmt, 0));
+    }
+
+    pub const DomainInfo = struct { domain: []u8, created_at: i64 };
+
+    pub fn listDomains(self: *GlobalDb) ![]DomainInfo {
+        const stmt = try prepare(self.db,
+            "SELECT domain, created_at FROM domains ORDER BY domain");
+        defer _ = c.sqlite3_finalize(stmt);
+        var list: std.ArrayList(DomainInfo) = .{ .items = &.{}, .capacity = 0 };
+        while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+            const domain = try self.alloc.dupe(u8, columnText(stmt, 0));
+            const created_at: i64 = c.sqlite3_column_int64(stmt, 1);
+            try list.append(self.alloc, .{ .domain = domain, .created_at = created_at });
+        }
+        return list.toOwnedSlice(self.alloc);
+    }
+
+    pub fn getUserDomain(self: *GlobalDb, email: []const u8) ![]const u8 {
+        const stmt = try prepare(self.db, "SELECT domain FROM users WHERE email=? AND active=1");
         defer _ = c.sqlite3_finalize(stmt);
         bindText(stmt, 1, email);
         if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return error.UserNotFound;
@@ -218,6 +267,7 @@ const schema =
     \\  email TEXT NOT NULL UNIQUE,
     \\  password_hash TEXT NOT NULL,
     \\  role TEXT NOT NULL DEFAULT 'user',
+    \\  domain TEXT NOT NULL DEFAULT '',
     \\  quota_bytes INTEGER NOT NULL DEFAULT 1073741824,
     \\  active INTEGER NOT NULL DEFAULT 1,
     \\  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
